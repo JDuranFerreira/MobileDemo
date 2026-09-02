@@ -41,7 +41,7 @@ so the project can be understood system by system without reading all the code.
 **When a system changes, update its guide in the same change.**
 
 Use the system's name, kebab-cased — e.g. `.claude/systems/game-state-machine.md`,
-`tower.md`, `enemy.md`, `wave-runner.md`, `enemy-factory.md`, `projectile-pool.md`,
+`tower.md`, `enemy.md`, `wave-runner.md`, `enemy-factory.md`, `object-pool.md`,
 `economy.md`, `build-controller.md`, `input-service.md`, `hud-presenter.md`.
 
 Each guide covers:

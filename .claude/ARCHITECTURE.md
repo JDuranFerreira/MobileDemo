@@ -48,6 +48,12 @@ PROJECTILE_POOL_PREWARM   = 128
 
 No magic numbers in gameplay code — everything above is read from config assets.
 
+The two pool figures are the only entries not yet backed by an asset. `ObjectPool<T>` takes
+`prewarm` as a **constructor argument**, so today they are supplied by whoever constructs the pool;
+they move onto `GameConfig` when §13's slice creates it, and deliberately not before — a
+ScriptableObject holding one field is an asset for its own sake, and a ctor argument is what keeps
+the pool testable with no asset and no scene (§14).
+
 ---
 
 ## 3. High-level layout
@@ -125,10 +131,10 @@ interface, different scope. Reusing the shape shows the pattern generalises.
 | System | Responsibility | Key patterns |
 |---|---|---|
 | `EventBus` | Typed one-to-many delivery for the §8 catalogue | **Observer** |
+| `ObjectPool<T>` | Recycles pooled `Component`s — enemies and projectiles | **Object Pool** |
 | `GameStateMachine` | Round phases | **State** |
 | `WaveRunner` | Reads a `WaveDefinition`, schedules spawns over time | **Factory**, ScriptableObject |
 | `EnemyFactory` | Turns an `EnemyDefinition` into a live, pooled enemy | **Factory + Object Pool** |
-| `ProjectilePool` | Recycles projectiles fired by towers | **Object Pool** |
 | `Enemy` | Path following, health, death | **State**, Observer (emits) |
 | `Tower` | Target acquisition, firing | **Polling** (§9), Factory (spawns projectiles) |
 | `Economy` | Currency & lives | **Observer** (emits changes) |
@@ -136,8 +142,11 @@ interface, different scope. Reusing the shape shows the pattern generalises.
 | `InputService` | Touch → world intent | Strategy-ish (one interface, editor vs device) |
 | `HudPresenter` | Listens, renders numbers | **Observer** (subscribes) |
 
-`EventBus` heads the table because it is Core infrastructure the rest lean on, not a gameplay
-system in its own right — everything below it is a `MobileDemo.Gameplay`/`MobileDemo.UI` concern.
+`EventBus` and `ObjectPool<T>` head the table because they are Core infrastructure the rest lean
+on, not gameplay systems in their own right — everything below them is a
+`MobileDemo.Gameplay`/`MobileDemo.UI` concern. There is no `ProjectilePool` type: one generic pool
+serves both clients as `ObjectPool<Enemy>` and `ObjectPool<Projectile>`, and a named subclass per
+client would buy nothing.
 
 ---
 
@@ -148,10 +157,39 @@ This is the table a reviewer should read first. The right-hand column is the sen
 ### Object Pool — `Core/Pooling/ObjectPool<T>`
 - **Where:** enemies and projectiles. Enemies spawn in dozens per wave; a basic tower
   fires ~10×/sec. `Instantiate`/`Destroy` at that rate is the classic mobile GC-spike source.
-- **Why it's justified:** it directly serves the mobile constraint. Prewarmed at load
-  (`ENEMY_POOL_PREWARM`, `PROJECTILE_POOL_PREWARM`) so no hitches mid-wave.
+- **Why it's justified:** it directly serves the mobile constraint. Prewarmed at construction from
+  the §2 figures (`ENEMY_POOL_PREWARM`, `PROJECTILE_POOL_PREWARM`), passed as a constructor
+  argument rather than read from an asset — see §2 for why that is not yet `GameConfig`'s job.
 - **Where I did *not* pool:** towers themselves. A handful exist for the whole round and
   are placed by hand — pooling them would add lifecycle complexity for zero benefit.
+- **Exhaustion grows the pool. This reverses an earlier decision.** §12 used to list a fixed
+  budget as deliberately out of scope, on the reasoning that one known wave sequence needs no
+  growth. That reasoning is still true about the *shipped* configuration and prewarm is still sized
+  to hold it — but it decided the wrong question. The question is not "will a correctly tuned pool
+  run dry" (it won't), it is "what should happen when someone tunes it wrong", and the honest
+  answer is not a silently missing enemy. So an exhausted `Get()` creates one more instance and
+  logs a warning: a mis-tuned prewarm costs one frame's `Instantiate` and one console line instead
+  of a spawn that never appears. The cost of the reversal is that §10's allocation budget is now an
+  invariant the numbers are *sized* to hold rather than one the code enforces, which is why §10
+  says so in those words.
+- **Growth is one instance per exhausted `Get`, never a doubling.** Doubling a 64-deep pool
+  mid-wave would allocate 64 GameObjects in a single frame — a bigger hitch than the one pooling
+  exists to avoid. The warning fires once per pool, because a burst can exhaust a pool many times
+  in one frame and a flooded console is a console nobody reads; `InstanceCount > Prewarm` is the
+  durable record, and `PeakActive` is the number to retune to.
+- **Two callbacks (`IPoolable.OnSpawn`/`OnDespawn`), not `OnEnable`/`OnDisable`.** Those are
+  spoken for: a pooled object is *disabled, not destroyed*, so `OnEnable`/`OnDisable` is the only
+  correct home for EventBus subscription. Ordering is `SetActive(true)` → `OnSpawn()`, because a
+  coroutine started in `OnSpawn` throws on an inactive GameObject and a tween on an inactive
+  transform is meaningless; and `OnDespawn()` → `SetActive(false)` for the mirror reason. Prewarm
+  does not call `OnDespawn`, so `OnSpawn` is the sole initializer.
+- **`IPoolStats` — why a generic class needs a non-generic face.** `ObjectPool<Enemy>` and
+  `ObjectPool<Projectile>` are unrelated closed types, so without a non-generic read surface
+  nothing can hold a collection of pools. That is structural, not anticipation of the tool in §15;
+  `PeakActive` already earns its place through §10.
+- **Where I stopped:** no pool registry, no editor overlay, no `Clear`/`Dispose`, and no sweep for
+  instances destroyed behind the pool's back. Each has a named trigger in
+  [systems/object-pool.md](systems/object-pool.md) rather than speculative code here.
 
 ### Factory — `EnemyFactory`, projectile creation on `Tower`
 - **Where:** `WaveRunner` asks `EnemyFactory` for "an enemy of this definition." The factory
@@ -303,8 +341,13 @@ stated so the choice looks reasoned.
   explicit `orderInLayer`. No per-object materials.
 - **Resolution:** Canvas Scaler set to *Scale With Screen Size* against `REFERENCE_RESOLUTION`,
   match = 0.5, so it survives from 18:9 to 20:9 without art breaking.
-- **Allocation budget:** zero `Instantiate`/`Destroy` during a wave (that's what §6 pooling
-  buys). Cache `WaitForSeconds`, avoid LINQ in per-tick paths, cache `Transform` references.
+- **Allocation budget:** zero `Instantiate`/`Destroy` during a wave — an invariant the §2 prewarm
+  figures are *sized* to hold, not one the code enforces. An exhausted `ObjectPool<T>.Get()` grows
+  by one and logs a warning (§6), so a mis-tuned prewarm surfaces as one frame's allocation and one
+  console line rather than a missing enemy. That makes **a clean console across a full wave** the
+  thing that actually certifies this budget, and `PeakActive` after a run the number prewarm should
+  be tuned to — which is what gives `IPoolStats` a job today, with the §15 overlay still unbuilt.
+  Cache `WaitForSeconds`, avoid LINQ in per-tick paths, cache `Transform` references.
 
 ### Build & player settings
 
@@ -347,7 +390,7 @@ Assets/
   Scripts/
     Core/           (MobileDemo.Core.asmdef)
       Events/       EventBus.cs, IEvent.cs, GameEvents.cs
-      Pooling/      ObjectPool.cs, IPoolable.cs
+      Pooling/      ObjectPool.cs, IPoolable.cs, IPoolStats.cs
       Config/       GameConfig.cs
       Interfaces/   ICommand.cs, IGameState.cs, IInputService.cs
     Gameplay/       (MobileDemo.Gameplay.asmdef)
@@ -361,7 +404,7 @@ Assets/
     UI/             (MobileDemo.UI.asmdef)
       HudPresenter.cs, BuildMenu.cs, EndScreen.cs
     Editor/         (MobileDemo.Editor.asmdef — Editor platform only)
-      PathEditor.cs, PoolOverlay.cs
+      PathEditor.cs, PoolOverlay.cs        (both planned — §12)
   Tests/
     EditMode/       (MobileDemo.Tests.EditMode.asmdef — see §14)
   Data/             *.asset  (EnemyDefinition, TowerDefinition, WaveDefinition, GameConfig)
@@ -396,10 +439,12 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
 ### Rules this layout does keep
 
 - **`Editor/` is a reserved name, not a stylistic choice.** Unity excludes the contents of any
-  folder called `Editor` from player builds. The §15 tooling (`PathEditor`, the Pool Overlay
-  that reads `IPoolStats`) references `UnityEditor`, so without this folder — and an assembly
-  constrained to the Editor platform — the Android/iOS build fails to compile. The dependency
-  is strictly one-way: editor code may reference runtime code, never the reverse.
+  folder called `Editor` from player builds. The §15 tooling (`PathEditor`, and the Pool Overlay
+  that would read `IPoolStats` — both still unwritten, §12) references `UnityEditor`, so without
+  this folder — and an assembly constrained to the Editor platform — the Android/iOS build fails
+  to compile. The dependency is strictly one-way: editor code may reference runtime code, never
+  the reverse. The assembly exists ahead of its first file precisely so that stays true by
+  construction.
 - **No `Resources/`.** It inflates build size unconditionally and offers no async loading.
   Every ScriptableObject is referenced directly per §7, so nothing here needs it.
 - **Type folders stop at the top level.** No `Art/Textures/` or `Art/Materials/` nesting — the
@@ -410,15 +455,26 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
   `Unity.InputSystem` (the §10 input services); `MobileDemo.UI` references `UnityEngine.UI` and
   `Unity.TextMeshPro` (§15). `MobileDemo.Core` references nothing but the engine — which is
   precisely what makes it the layer everything else can safely depend on.
+- **`Interfaces/` is for the cross-cutting ones.** `ICommand`, `IGameState` and `IInputService`
+  are contracts a whole layer implements and other layers name. An interface that exists to serve
+  one type lives beside that type instead — which is why `IPoolable` and `IPoolStats` sit in
+  `Pooling/` and not in `Interfaces/`. Grouping interfaces by the fact that they are interfaces
+  would be filing by C# keyword rather than by responsibility.
 
-**Status:** every folder above exists, and each code folder carries its `.asmdef` — so the
-dependency graph in §3 is enforced by the compiler from the first line of code rather than
-retrofitted later, when untangling it would mean moving files.
+**Status:** the tree above is the target layout. What exists today is every `.asmdef` — `Core`,
+`Gameplay`, `UI`, `Editor`, `Tests/EditMode` — so the §3 dependency graph is enforced by the
+compiler from the first line of code rather than retrofitted later, when untangling it would mean
+moving files. Leaf folders appear as their code does: `Core/Events` and `Core/Pooling` exist;
+`Core/Config`, `Core/Interfaces` and the whole `Gameplay/` and `UI/` subtrees are still only names
+in this table.
 
-`Art/`, `Data/`, `Prefabs/` and `Scenes/` hold no project content yet. Git does not track
-empty directories, so those four will not survive a clone until real assets land in them;
-§13's vertical slice is what fills them. Anything still empty when the demo ships should be
-deleted rather than committed as decoration.
+Of the asset folders, only `Art/` and `Scenes/` hold content — sprites for towers and projectiles,
+and Unity's `SampleScene.unity` (the `Game.unity` named above does not exist yet). `Data/` and
+`Prefabs/` are empty, and §13's vertical slice is what fills them; anything still empty when the
+demo ships should be deleted rather than committed as decoration. Note that git does not track
+empty directories but *does* currently track their `.meta` files, so a fresh clone gets orphan
+`.meta`s that Unity deletes on first open — worth a cleanup pass, and called out here so the next
+reader knows the diff is expected rather than damage.
 
 ---
 
@@ -426,8 +482,16 @@ deleted rather than committed as decoration.
 
 Listed so their absence is legibly a decision:
 save/meta-progression, multiple maps, more than two enemy/tower types, audio, IAP/ads,
-analytics, localisation, networking, object-pool auto-growth beyond prewarm (fixed budget
-is fine for one known wave sequence).
+analytics, localisation, networking.
+
+Still out of scope, and specific to §6's pooling: a pool registry or editor overlay for live counts
+(`IPoolStats` exists for it; the tool does not), pool `Clear`/`Dispose` and cross-scene pool
+lifetime, pooling anything other than enemies and projectiles, and a PlayMode test assembly.
+
+**One entry has been removed from this list rather than kept.** *Object-pool auto-growth beyond
+prewarm* was listed here as out of scope, with the reasoning that a fixed budget is fine for one
+known wave sequence. Growth is now implemented, so the entry cannot stand; the reversal and what it
+cost are recorded at the decision point in §6's Object Pool entry, not deleted.
 
 ---
 
@@ -436,7 +500,8 @@ is fine for one known wave sequence).
 Prove the spine end-to-end with the *fewest* moving parts, then grow it:
 
 1. One `EnemyDefinition`, one hard-coded path (waypoints in the scene).
-2. A pooled spawner (`ObjectPool<Enemy>` + `EnemyFactory`) releases one enemy.
+2. A pooled spawner (`ObjectPool<Enemy>` + `EnemyFactory`) *gets* one enemy — `Release` is the
+   opposite direction, the return to the pool.
 3. The enemy follows the path, reaches the end, and raises `EnemyLeaked`.
 4. A single `HudPresenter` label subscribed to the bus decrements a lives counter.
 
@@ -451,7 +516,8 @@ One verified slice at a time.
 
 EditMode tests where they're cheap and meaningful — exactly the seams the patterns created:
 `EventBus` (deliver/unsubscribe/isolation per type, `ClearAll`), `ObjectPool` (get/release/reuse,
-no leak), each `ICommand` (execute then undo restores state), `Economy`
+no leak, plus growth on exhaustion, a rejected double release, and the `SetActive`↔`OnSpawn` order
+§6's reasoning depends on), each `ICommand` (execute then undo restores state), `Economy`
 (spend/earn/insufficient-funds), `GameStateMachine` (legal transitions only). These pass without a
 scene, because Command and the EventBus decoupled the logic from Unity objects — which is the
 practical payoff of the architecture, not just theory.
@@ -462,9 +528,18 @@ rest of that dispatch through (the multicast snapshot), and that subscribing the
 twice calls it twice (no hidden de-duplication). Both are asserted deliberately, so changing them
 has to be a decision rather than an accident.
 
+The `ObjectPool` tests are where EditMode's limits show, so the boundary is stated rather than
+discovered. They build their prefab from a runtime `GameObject` under a throwaway root and tear it
+down with `DestroyImmediate` — in EditMode, `Destroy` defers to a frame that never arrives, so
+every pooled instance would leak into the next test. What that leaves unverified, by choice:
+`Awake`/`OnEnable` ordering and a coroutine started from `OnSpawn` are Play-Mode behaviour, and
+there is no PlayMode assembly (§12). The tests assert the pool's *own* call order instead —
+observable from inside `OnSpawn`/`OnDespawn` and fully deterministic — which is the half §6
+actually depends on.
+
 These live in `Assets/Tests/EditMode` under `MobileDemo.Tests.EditMode`. It references
 `MobileDemo.Core` and `MobileDemo.Gameplay` — deliberately *not* `MobileDemo.UI`, since none of
-the four targets above is a UI class — plus `UnityEngine.TestRunner` / `UnityEditor.TestRunner`
+the five targets above is a UI class — plus `UnityEngine.TestRunner` / `UnityEditor.TestRunner`
 and NUnit. It is restricted to the Editor platform and gated behind a `UNITY_INCLUDE_TESTS`
 define constraint, so no test code can reach a player build.
 
@@ -493,11 +568,16 @@ the included one — it shows the same judgment as §6's "where I did *not* use 
 
 ### First-party built-in — a stated pooling decision
 Unity ships `ObjectPool<T>` in `UnityEngine.Pool`. This project rolls its own instead, for
-two demo-specific reasons: to **demonstrate the pattern** rather than hide it behind a call,
-and to expose `IPoolStats`/`PeakActive` so the Pool Overlay tool can read live counts — which
-the built-in doesn't surface. `UnityEngine.Pool` is the correct production default; rolling
-our own here is a deliberate, demo-motivated choice, recorded so it reads as "knew and chose,"
-not "didn't know."
+three reasons, only two of which are demo-specific. To **demonstrate the pattern** rather than
+hide it behind a call. To expose `IPoolStats`/`PeakActive`, which the built-in doesn't surface —
+`PeakActive` pays for itself before any tooling exists, as §10's allocation budget is certified by
+it, and the Pool Overlay that would also read it is still §12 work. And the reason that holds
+regardless of either: `UnityEngine.Pool.ObjectPool<T>` is a **plain-object** pool with `Action`
+hooks — it knows nothing about prefab instantiation, parenting or GameObject activation, so
+wrapping it would still leave us writing the create/activate/parent code, which is most of what
+our class *is*. `UnityEngine.Pool` remains the correct production default for pooling plain
+objects; rolling our own for pooled `Component`s is a deliberate choice, recorded so it reads as
+"knew and chose," not "didn't know."
 
 ### Third-party — exactly one
 - **PrimeTween** — for game feel (placement pop, hit-flash, UI slides). Polish is
