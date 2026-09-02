@@ -178,19 +178,40 @@ This is the table a reviewer should read first. The right-hand column is the sen
   rather than a `Dictionary<Type, List<Delegate>>` hashed on every publish. Subscribers are held
   in a multicast `Action<TEvent>`, which is immutable: a handler that unsubscribes itself mid-
   dispatch cannot corrupt the in-flight call, and getting that same guarantee from a `List` would
-  cost a defensive copy per publish — an allocation on the one path §10 promises not to allocate
-  on. Payloads are `readonly struct`s marked `IEvent`; being generic over the concrete type, the
-  bus never boxes them.
+  cost a defensive copy per publish. Payloads are `readonly struct`s, enforced by
+  `where TEvent : struct, IEvent` so no-boxing is the compiler's guarantee and not a convention.
+  The real win is compile-time, though, not allocation: `Subscribe` and `Publish` agree on
+  `TEvent` by construction, so a handler wired to the wrong event fails to compile instead of
+  failing the day that event first fires.
 - **The one non-obvious requirement — clearing statics between play sessions.** With *Enter Play
   Mode Options* set to skip domain reload, static subscribers survive into the next session and
   the second Play throws `MissingReferenceException` from code that reads as correct. A
   non-generic `EventBus.ClearAll()` runs at `SubsystemRegistration` to prevent that. It needs the
   indirection of a reset registry because a static generic class cannot be enumerated — there is
   no way to ask the runtime which closed forms exist, so each one registers itself on first use.
-- **Portability:** the bus and its `IEvent` marker depend on `System` and
-  `System.Collections.Generic` only; the single engine touch, the play-mode reset hook, sits
-  behind `UNITY_5_3_OR_NEWER`. The two files drop into a non-Unity project unchanged, which is
-  also what lets §14 test them outside the editor.
+- **Dependency footprint:** `System`, `System.Collections.Generic`, and `UnityEngine` for the
+  play-mode reset hook. No package, no asset, no container, no base class a subscriber must
+  inherit. An earlier draft kept the engine touch behind `UNITY_5_3_OR_NEWER` so the files would
+  also compile outside Unity; that guard is gone and the bus is Unity-only by choice, because the
+  portability it bought was hypothetical. The property that actually pays daily is the one §14
+  uses: the bus tests with no scene, no GameObject and no play mode.
+- **Where a Factory would *not* help.** A factory is the seam between data and a configured
+  instance — its job for enemies, above. Events have no asset, no pool and no lifecycle to bridge,
+  and `Publish` needs `TEvent` at the call site regardless, so a factory could not remove the very
+  type it would exist to hide. The instinct behind the question — *one thing that manufactures
+  events, so a new event needs no new type* — is the ScriptableObject event-channel pattern, and
+  it is declined two bullets up.
+- **Considered and declined — one-line event declarations.** Each event costs a ~6-line
+  `readonly struct`, so: can it be one line? Two routes exist and both lose. *C# 9 records* —
+  `record struct` is exactly right but is C# 10, and Unity 6.3 pins `-langversion:9.0`; a `record`
+  *class* is reachable with a hand-declared `IsExternalInit`, but it is a reference type, so every
+  publish heap-allocates and it contradicts the `struct` constraint outright. *Phantom-tag
+  generics* — `Changed<Currency>` and `Changed<Lives>` genuinely are distinct closed types with
+  distinct statics, so this does trade six lines for one, but it only fits the four single-`int`
+  events (`EnemyKilled` carries reward *and* position) and it makes §8 a worse catalogue to read,
+  which is most of what §8 is for. Worth naming the trap next door: a `ValueTuple` payload,
+  `EventBus<(int total)>`, would silently put `CurrencyChanged` and `LivesChanged` on the *same*
+  bus. Distinct named types are what prevent that.
 
 ### Command — `Gameplay/Build/ICommand` + `BuildController`
 - **Where:** build-phase actions only — `PlaceTowerCommand`, `UpgradeTowerCommand`,
@@ -201,6 +222,13 @@ This is the table a reviewer should read first. The right-hand column is the sen
 - **Where I stopped:** undo does **not** cover combat (you can't un-kill an enemy). Undo is
   scoped to the build phase, where it models a real player affordance ("misclicked, take it back")
   instead of inventing complexity to show off.
+- **How it meets the bus — the one place the two patterns can disagree.** A command is not an
+  event: it is an imperative with exactly one execution and a receiver the caller holds, where an
+  event is a past-tense fact broadcast to nobody in particular. But commands *produce* events.
+  `PlaceTowerCommand.Execute()` spends currency, so `Economy` raises `CurrencyChanged`; `Undo()`
+  must therefore refund **and let that raise again**, or `HudPresenter` and `BuildController`'s
+  afford check (§8) keep showing the pre-undo balance while `Economy` holds the real one. Undo
+  restores state *and* re-announces it.
 
 ```csharp
 public interface ICommand
@@ -343,6 +371,11 @@ Assets/
   Settings/         URP 2D pipeline assets — Unity's 2D template made these; left in place
 ```
 
+Outside `Assets/`, the repo root holds one authored folder: **`Tools/`**, for scripts that act
+on the project rather than shipping in it (`lint.ps1` — see §15). It sits outside `Assets/`
+deliberately: anything under `Assets/` is an asset Unity imports, generates a `.meta` for and
+considers for a build, and a lint script is none of those things.
+
 ### Why flat, and not an `Assets/_MobileDemo/` root
 
 Most Unity style guides recommend putting everything you author inside a single
@@ -470,9 +503,10 @@ not "didn't know."
 - **PrimeTween** — for game feel (placement pop, hit-flash, UI slides). Polish is
   disproportionately what makes a demo read as *finished*. Chosen over the more popular
   **DOTween** specifically because PrimeTween is **allocation-free**, which is consistent
-  with this project's zero-allocation-during-a-wave thesis; DOTween allocates on each tween
-  start and would quietly contradict that claim. Free, installs via Package Manager. DOTween
-  remains the fair alternative if its richer sequencing is ever needed.
+  with §10's allocation budget; DOTween allocates on each tween start, and tweens run
+  *continuously* during a wave — squarely the per-frame path §10 does police — so it would
+  quietly contradict that budget. Free, installs via Package Manager. DOTween remains the fair
+  alternative if its richer sequencing is ever needed.
 
 ### Deliberately excluded
 | Not used | Why |
@@ -487,3 +521,63 @@ not "didn't know."
 Git + a Unity `.gitignore`. Version control is a baseline requirement in the roles this demo
 targets, and a clean commit history is itself portfolio evidence. Unity's own Version Control
 is free, but Git is the expected standard.
+
+### Lint — `.editorconfig` + `dotnet format`
+
+The project lints itself through a root **`.editorconfig`**, run from **`Tools/lint.ps1`**
+(read-only by default, `-Fix` to apply). It needs no package: `.editorconfig` is what Rider,
+Visual Studio and VS Code already read, and `dotnet format` ships with the .NET SDK. The
+script drives two passes over the `.csproj` files Unity generates — `whitespace` (syntax tree
+only, so it works even when the code does not compile) and `style` (the `IDE####` rules, which
+need a real compilation and therefore Unity's generated references).
+
+The severity policy is the part worth defending: **rules that catch something wrong are
+`warning`; rules that are taste are `suggestion`; nothing is `error`.** A demo whose build
+stops on a stray blank line is a demo nobody playtests. `Tools/lint.ps1` still exits non-zero
+on any warning, so there is a hard gate exactly where a hard gate belongs — a deliberate
+check — and not in the edit-compile-play loop.
+
+**It runs at three moments, deliberately, because no one of them is sufficient.** Live, as
+squiggles: the C# extension is Roslyn-based and reads `.editorconfig` itself, so violations
+surface as you type — but only in *open* files. On save: `.vscode/settings.json` turns on
+`editor.formatOnSave` for `[csharp]`, which fixes the formatting rules and (via
+`dotnet.formatting.organizeImportsOnFormat`) the using directives, so the mechanical half of
+the lint can never fail. On demand: `Tools/lint.ps1` covers every file in every assembly and
+is the only one of the three that can fail a check, which is why it is the one that matters.
+The `[csharp]` block pins `editor.defaultFormatter` explicitly rather than relying on the
+default, because a global default formatter set for another language would otherwise be handed
+our `.cs` files on save.
+
+The gap that leaves: naming, `this.` qualification, braces and `readonly` are code actions
+rather than formatting, and the C# extension has no fix-all-on-save for them. They stay
+visible as warnings and are applied by `Tools/lint.ps1 -Fix`. Note also that VS Code's core
+editor does not read `.editorconfig` without the EditorConfig extension, which is not
+installed here — so the `[*]` section is advisory for anything that is not C#.
+
+Two consequences worth recording, because both were arrived at by being burned:
+
+- **Line endings are pinned to LF in two places.** With `end_of_line` unset, `dotnet format`
+  falls back to `Environment.NewLine` and writes CRLF into whichever line it fixes, leaving an
+  otherwise-LF file with mixed endings — which is how the first run of this lint left
+  `GameEvents.cs`. `.editorconfig` pins `end_of_line = lf` and `.gitattributes` pins
+  `*.cs text eol=lf`, so checkout is deterministic regardless of a machine's `core.autocrlf`
+  and the lint cannot pass here while failing on another clone.
+- **The rules codify the conventions already in `Core/Events`, rather than importing a
+  house style.** Explicit types over `var`, no `this.`, no `private` keyword where private is
+  the default, block-scoped namespaces (also forced by Unity generating the project at
+  LangVersion 9), and the naming split the `EventBus` already uses: PascalCase for readonly
+  statics, camelCase with no underscore prefix for mutable private fields — underscores only
+  degrade the label Unity's Inspector derives from a field name.
+
+**What this lint deliberately does not cover: Unity-specific mistakes.** `GetComponent` in
+`Update`, an empty `Update`, `?.` on a `UnityEngine.Object` (where the engine's overloaded `==`
+sees a destroyed object as null but the runtime's reference check does not) — those are
+`Microsoft.Unity.Analyzers`' `UNT####` rules, and catching them means committing a DLL under
+`Assets/` with a `RoslynAnalyzer` label. That is a dependency, so it answers to the policy at
+the top of this section and is currently declined: the analyzer is the right call the moment
+there is enough `MonoBehaviour` code for those rules to have something to say, and there is
+almost none yet. The two `.editorconfig` rules most likely to bite in Unity —
+`dotnet_style_null_propagation` and `dotnet_style_coalesce_expression` — are held at
+`suggestion` for precisely this reason, with the trap written out at the point of the setting.
+Escalating them to `warning` without the analyzer present would be pressuring the reader
+toward the bug.
