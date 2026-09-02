@@ -1,0 +1,284 @@
+# EditorConfig for MobileDemo — see .claude/ARCHITECTURE.md §15 ("Process").
+#
+# This file is the project's lint. It is read by Rider, Visual Studio, VS Code (via the
+# C#/Unity extension) and by `dotnet format`, which is what Tools/lint.ps1 drives.
+#
+# Two rules govern the severities below, so a reader can tell taste from defect:
+#   warning     — catches something wrong, or pins a decision recorded in ARCHITECTURE.md.
+#                 Visible in the IDE, and fails Tools/lint.ps1.
+#   suggestion  — a stylistic preference. An IDE hint only; never fails the lint.
+# Nothing is set to `error`: a stray blank line must not stop a playtest.
+#
+# What this lint deliberately does NOT cover: Unity-specific mistakes (GetComponent in
+# Update, `?.` on a UnityEngine.Object, an empty Update). Those need Microsoft.Unity.Analyzers
+# as a committed DLL under Assets/, which §15's dependency policy rules out for now. Noted
+# so the gap reads as a known boundary rather than an oversight.
+
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# `end_of_line` is set for *.cs only, further down — see the note there.
+
+# Unity writes these and will overwrite any reformatting, so match what it emits.
+[*.{asmdef,asmref}]
+indent_size = 4
+
+[*.json]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+# Two trailing spaces is a hard line break in Markdown, so trimming them changes meaning.
+[*.md]
+trim_trailing_whitespace = false
+
+# Unity- and tool-generated trees. Never our code, never our problem.
+[{Library,Temp,Logs,Build,Builds,obj,UserSettings}/**]
+generated_code = true
+
+# =======================================================================================
+# C#
+# =======================================================================================
+[*.cs]
+
+# LF, pinned — and it has to be pinned somewhere. Left unset, `dotnet format` falls back to
+# Environment.NewLine and writes a CRLF terminator into whichever line it happens to fix, so
+# one indentation fix leaves an otherwise-LF file with mixed endings. That is not
+# hypothetical: it is exactly what this lint's first run did to GameEvents.cs. LF over CRLF
+# because it is what the working tree already holds and what Git stores after normalisation.
+#
+# Set here for *.cs rather than under [*] on purpose: this is the only file type anything
+# actually enforces it on (`dotnet format` formats nothing else), and it is the only one
+# .gitattributes can back with a matching `*.cs text eol=lf` — which is the other half of the
+# decision, making checkout deterministic regardless of a machine's core.autocrlf so the lint
+# cannot pass here and fail on another clone. Claiming `lf` for *.md under [*] would be a
+# promise Git contradicts, since the template leaves those to autocrlf.
+end_of_line = lf
+
+# The umbrella formatting rule — everything under "Formatting" below reports through it.
+dotnet_diagnostic.IDE0055.severity = warning
+
+# --- Using directives ------------------------------------------------------------------
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_diagnostic.IDE0005.severity = warning
+
+# --- Namespaces ------------------------------------------------------------------------
+# Block-scoped, not file-scoped — and not merely taste: Unity generates the .csproj at
+# LangVersion 9, and file-scoped namespaces are C# 10.
+csharp_style_namespace_declarations = block_scoped:warning
+# Off because the layout in §11 is intentional: Tests/EditMode holds MobileDemo.Tests.EditMode.
+dotnet_style_namespace_match_folder = false
+
+# --- `this.` — never -------------------------------------------------------------------
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
+
+# --- Types and modifiers ---------------------------------------------------------------
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_style_predefined_type_for_member_access = true:warning
+# Omit the modifier where it is already the default, i.e. no `private` keyword on members.
+dotnet_style_require_accessibility_modifiers = omit_if_default:warning
+dotnet_style_readonly_field = true:warning
+csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async:warning
+
+# --- Explicit types over `var` ---------------------------------------------------------
+# A portfolio demo is read far more often than written, and §1 makes legibility the
+# product. Suggestion, not warning: this is taste, and taste should not fail a lint.
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = false:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# --- Braces ----------------------------------------------------------------------------
+# Always braced, even a one-line body. The one "style" rule here that is really a
+# correctness rule — the class of bug an unbraced `if` invites is not hypothetical.
+csharp_prefer_braces = true:warning
+
+# --- Expression-bodied members ---------------------------------------------------------
+# Used heavily in Core/Events: a one-line member reads better as `=>`, anything longer does
+# not. `when_on_single_line` encodes exactly that line.
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_constructors = when_on_single_line:suggestion
+csharp_style_expression_bodied_operators = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = when_on_single_line:suggestion
+csharp_style_expression_bodied_indexers = when_on_single_line:suggestion
+csharp_style_expression_bodied_accessors = when_on_single_line:suggestion
+csharp_style_expression_bodied_lambdas = when_on_single_line:suggestion
+csharp_style_expression_bodied_local_functions = when_on_single_line:suggestion
+
+# --- Language preferences --------------------------------------------------------------
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_auto_properties = true:warning
+dotnet_style_explicit_tuple_names = true:warning
+dotnet_style_prefer_compound_assignment = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:suggestion
+dotnet_style_prefer_conditional_expression_over_return = true:suggestion
+csharp_style_throw_expression = true:suggestion
+csharp_style_conditional_delegate_call = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+csharp_style_prefer_switch_expression = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_inlined_variable_declaration = true:suggestion
+csharp_style_deconstructed_variable_declaration = true:suggestion
+csharp_style_unused_value_assignment_preference = discard_variable:suggestion
+csharp_style_unused_value_expression_statement_preference = discard_variable:silent
+csharp_style_implicit_object_creation_when_type_is_apparent = false:suggestion
+
+# `?.` and `??` stay at suggestion ON PURPOSE, and must not be escalated to warning.
+# On a UnityEngine.Object they are a trap: the engine's overloaded `==` reports a destroyed
+# object as null, while `?.` and `??` use the runtime's own reference check and see a live
+# object — so the "simplification" the IDE offers silently changes behaviour. It is safe on
+# plain CLR types (EventBus's `handlers?.Invoke`) and wrong on anything with a GameObject
+# behind it, which is a judgement no severity setting can make on our behalf.
+# Microsoft.Unity.Analyzers' UNT0008 is what would catch the bad case; see the header note.
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_coalesce_expression = true:suggestion
+csharp_style_prefer_null_check_over_type_check = true:suggestion
+
+# --- Unused code -----------------------------------------------------------------------
+# Suggestion rather than warning because Unity's entry points defeat the analysis: a
+# `[RuntimeInitializeOnLoadMethod]` method is called and a `[SerializeField]` field is
+# assigned by the engine, and Roslyn cannot see either. Left visible, but unable to fail
+# the lint on code that is in fact correct.
+dotnet_diagnostic.IDE0051.severity = suggestion
+dotnet_diagnostic.IDE0052.severity = suggestion
+dotnet_code_quality_unused_parameters = all:suggestion
+
+# --- Formatting: new lines (Allman) ----------------------------------------------------
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+# --- Formatting: indentation -----------------------------------------------------------
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = false
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+
+# --- Formatting: spacing ---------------------------------------------------------------
+csharp_space_after_cast = false
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_after_comma = true
+csharp_space_after_dot = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_after_semicolon_in_for_statement = true
+csharp_space_around_binary_operators = before_and_after
+csharp_space_around_declaration_statements = false
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_before_comma = false
+csharp_space_before_dot = false
+csharp_space_before_open_square_brackets = false
+csharp_space_before_semicolon_in_for_statement = false
+csharp_space_between_empty_square_brackets = false
+csharp_space_between_method_call_empty_parameter_list_parentheses = false
+csharp_space_between_method_call_name_and_opening_parenthesis = false
+csharp_space_between_method_call_parameter_list_parentheses = false
+csharp_space_between_method_declaration_empty_parameter_list_parentheses = false
+csharp_space_between_method_declaration_name_and_open_parenthesis = false
+csharp_space_between_method_declaration_parameter_list_parentheses = false
+csharp_space_between_parentheses = false
+csharp_space_between_square_brackets = false
+
+# --- Formatting: wrapping --------------------------------------------------------------
+csharp_preserve_single_line_blocks = true
+csharp_preserve_single_line_statements = false
+
+# =======================================================================================
+# Naming — codifies the convention already in Core/Events rather than inventing one
+# =======================================================================================
+# The distinction worth naming: a readonly static reads as a fixed thing and takes
+# PascalCase (`EventBus.Resetters`), while a mutable private field is state and takes
+# camelCase (`EventBus<T>.handlers`). No underscore prefix anywhere — Unity's Inspector
+# derives a field's display label from its identifier, and a leading underscore only makes
+# that label worse.
+
+dotnet_diagnostic.IDE1006.severity = warning
+
+# --- styles ---
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+dotnet_naming_style.camel_case.capitalization = camel_case
+
+dotnet_naming_style.i_prefixed.capitalization = pascal_case
+dotnet_naming_style.i_prefixed.required_prefix = I
+
+dotnet_naming_style.t_prefixed.capitalization = pascal_case
+dotnet_naming_style.t_prefixed.required_prefix = T
+
+# --- symbol groups ---
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_symbols.interfaces.applicable_accessibilities = *
+
+dotnet_naming_symbols.type_parameters.applicable_kinds = type_parameter
+dotnet_naming_symbols.type_parameters.applicable_accessibilities = *
+
+dotnet_naming_symbols.types_and_members.applicable_kinds = class, struct, enum, delegate, namespace, method, property, event, local_function
+dotnet_naming_symbols.types_and_members.applicable_accessibilities = *
+
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.applicable_accessibilities = *
+dotnet_naming_symbols.constants.required_modifiers = const
+
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.applicable_accessibilities = *
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+
+dotnet_naming_symbols.visible_fields.applicable_kinds = field
+dotnet_naming_symbols.visible_fields.applicable_accessibilities = public, internal, protected, protected_internal
+
+dotnet_naming_symbols.hidden_fields.applicable_kinds = field
+dotnet_naming_symbols.hidden_fields.applicable_accessibilities = private, private_protected
+
+dotnet_naming_symbols.locals_and_parameters.applicable_kinds = parameter, local
+dotnet_naming_symbols.locals_and_parameters.applicable_accessibilities = *
+
+# --- rules (first match wins, so the specific ones come first) ---
+dotnet_naming_rule.interfaces_are_i_prefixed.symbols = interfaces
+dotnet_naming_rule.interfaces_are_i_prefixed.style = i_prefixed
+dotnet_naming_rule.interfaces_are_i_prefixed.severity = warning
+
+dotnet_naming_rule.type_parameters_are_t_prefixed.symbols = type_parameters
+dotnet_naming_rule.type_parameters_are_t_prefixed.style = t_prefixed
+dotnet_naming_rule.type_parameters_are_t_prefixed.severity = warning
+
+dotnet_naming_rule.constants_are_pascal_case.symbols = constants
+dotnet_naming_rule.constants_are_pascal_case.style = pascal_case
+dotnet_naming_rule.constants_are_pascal_case.severity = warning
+
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.severity = warning
+
+dotnet_naming_rule.visible_fields_are_pascal_case.symbols = visible_fields
+dotnet_naming_rule.visible_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.visible_fields_are_pascal_case.severity = warning
+
+dotnet_naming_rule.hidden_fields_are_camel_case.symbols = hidden_fields
+dotnet_naming_rule.hidden_fields_are_camel_case.style = camel_case
+dotnet_naming_rule.hidden_fields_are_camel_case.severity = warning
+
+dotnet_naming_rule.locals_and_parameters_are_camel_case.symbols = locals_and_parameters
+dotnet_naming_rule.locals_and_parameters_are_camel_case.style = camel_case
+dotnet_naming_rule.locals_and_parameters_are_camel_case.severity = warning
+
+dotnet_naming_rule.types_and_members_are_pascal_case.symbols = types_and_members
+dotnet_naming_rule.types_and_members_are_pascal_case.style = pascal_case
+dotnet_naming_rule.types_and_members_are_pascal_case.severity = warning

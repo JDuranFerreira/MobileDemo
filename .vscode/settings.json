@@ -67,5 +67,19 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "MobileDemo.slnx"
+    "dotnet.defaultSolution": "MobileDemo.slnx",
+
+    // Formatting is driven by the root .editorconfig -- see ARCHITECTURE.md §15 ("Lint").
+    // This only covers the formatting class of rules (the IDE0055 family) plus using
+    // directives. Naming, `this.` removal, braces and readonly are code actions, not
+    // formatting: they stay as squiggles, and ./Tools/lint.ps1 -Fix is what applies them.
+    "[csharp]": {
+        "editor.formatOnSave": true,
+        // Pinned deliberately. The user-level settings set a *global* default formatter of
+        // dbaeumer.vscode-eslint, which would otherwise be handed our .cs files on save.
+        "editor.defaultFormatter": "ms-dotnettools.csharp"
+    },
+    // Defaults to false. Turning it on is what makes save also sort using directives and
+    // drop unused ones, so IDE0005 stops reaching the lint.
+    "dotnet.formatting.organizeImportsOnFormat": true
 }

@@ -17,7 +17,10 @@
 # Unity source files
 *.cginc                 text
 *.compute               text linguist-language=hlsl
-*.cs                    text diff=csharp
+# LOCAL DEVIATION from the synced template: `eol=lf` added. It pairs with
+# `end_of_line = lf` in .editorconfig so the lint (Tools/lint.ps1) sees the same line
+# endings on every machine regardless of core.autocrlf. Keep it across template re-syncs.
+*.cs                    text eol=lf diff=csharp
 *.hlsl                  text linguist-language=hlsl
 *.raytrace              text linguist-language=hlsl
 *.shader                text
