@@ -1,0 +1,489 @@
+# ARCHITECTURE.md
+
+**Project:** MobileDemo — a 2D mobile tower-defense demo
+**Engine:** Unity 6.3 LTS · **Language:** C# · **Target:** Android/iOS, portrait, 60 FPS
+
+---
+
+## 1. Purpose & honest framing
+
+This is a portfolio demo. Its job is to be a small, *finished*, genuinely playable
+tower-defense round that demonstrates a handful of well-known patterns **in places
+where they are actually the right tool** — not a gallery of patterns for their own sake.
+
+The single most important thing a reviewer can learn from this repo is *judgment*:
+where a pattern earned its place, and where a simpler option was chosen instead.
+That reasoning lives in this document and in short inline comments at each decision
+point, never in extra layers of code. If a pattern isn't pulling its weight, it isn't here.
+
+### Scope, deliberately bounded
+- **One** map, **one** wave sequence, **two** enemy types, **two** tower types.
+- Build phase → wave phase → win/lose. That's the whole loop.
+- No meta-progression, no save system, no ads/IAP, no networking, no audio mixing.
+  These are called out again in §12 so their absence reads as a decision, not a gap.
+
+---
+
+## 2. Design constraints (the "why" behind everything else)
+
+| Constraint | Consequence in the architecture |
+|---|---|
+| **Mobile** | Allocation during a wave is the enemy → **object pooling is mandatory, not decorative**. Draw calls kept low via one sprite atlas. |
+| **Touch input** | All interaction is tap-to-select / tap-to-place. Input is abstracted behind one interface so the demo can be driven by mouse in-editor. |
+| **Portrait, single screen** | No camera controller, no scrolling. The whole board fits `REFERENCE_RESOLUTION`. |
+| **60 FPS on mid-range phones** | Per-frame work is budgeted: enemies use cached transforms; towers scan on a **tick**, not every frame (see §9). |
+| **Small & finished** | Every system has a hard "good enough for the demo" line. Abstraction stops there. |
+
+Named constants (single source of truth — see `GameConfig` ScriptableObject, §7):
+
+```
+REFERENCE_RESOLUTION      = 1080 x 1920   (portrait)
+TARGET_FRAME_RATE         = 60
+STARTING_CURRENCY         = 100
+STARTING_LIVES            = 20
+TOWER_SCAN_INTERVAL_SEC   = 0.1           (see §9 Polling)
+ENEMY_POOL_PREWARM        = 64
+PROJECTILE_POOL_PREWARM   = 128
+```
+
+No magic numbers in gameplay code — everything above is read from config assets.
+
+---
+
+## 3. High-level layout
+
+Three runtime assemblies, so dependency direction is enforced *by the compiler*, not by
+discipline:
+
+```
++-------------------------------------------------------------+
+|  MobileDemo.UI          (HUD, build menu, win/lose panels)    |
+|      depends on ->  Gameplay, Core                           |
++-------------------------------------------------------------+
+|  MobileDemo.Gameplay    (towers, enemies, waves, economy,     |
+|                         spawning, phases)                    |
+|      depends on ->  Core                                     |
++-------------------------------------------------------------+
+|  MobileDemo.Core        (EventBus, pooling, interfaces,       |
+|                         ScriptableObject base types, config) |
+|      depends on ->  (nothing project-specific)               |
++-------------------------------------------------------------+
+```
+
+Rule: **UI never reads gameplay state directly and Gameplay never references UI.**
+They meet only through events (§8). If a `using UI;` ever appears in a Gameplay file,
+the build breaks — which is the point.
+
+Assemblies are named `MobileDemo.<Layer>`, not bare `Core` / `Gameplay` / `UI`. A bare
+`UI.asmdef` produces an assembly called literally `UI` — generic enough to collide with a
+package, and it tells a reader nothing about where the code came from. The prefix is the
+standard Unity `<Project>.<Module>` convention and costs nothing.
+
+A fourth assembly, **`MobileDemo.Editor`**, sits outside this stack: it is editor-only, is
+excluded from player builds, and may reference the three above while none of them can
+reference it. See §11 for why that separation is a hard requirement rather than tidiness.
+
+---
+
+## 4. Core game loop & phases — **State pattern**
+
+The round is a small state machine. This is the pattern I'd rank *highest* for a job
+signal, above Factory, because it keeps the whole game readable at a glance.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Build
+    Build --> Wave : StartWave (player taps "Go")
+    Wave --> Build : wave cleared & waves remain
+    Wave --> Victory : last wave cleared
+    Wave --> Defeat : lives == 0
+    Victory --> [*]
+    Defeat --> [*]
+```
+
+```csharp
+public interface IGameState
+{
+    void Enter();
+    void Tick(float dt);
+    void Exit();
+}
+```
+
+`GameStateMachine` owns the current `IGameState`, forwards `Tick`, and swaps states.
+Each state is tiny and does one thing: `BuildState` enables the build UI and pauses
+spawning; `WaveState` drives the active `WaveRunner`; `VictoryState`/`DefeatState`
+freeze the board and raise a single event for the UI.
+
+Enemies get their *own* micro state machine (`Spawning → Moving → Dying`) — same
+interface, different scope. Reusing the shape shows the pattern generalises.
+
+---
+
+## 5. Systems overview
+
+| System | Responsibility | Key patterns |
+|---|---|---|
+| `EventBus` | Typed one-to-many delivery for the §8 catalogue | **Observer** |
+| `GameStateMachine` | Round phases | **State** |
+| `WaveRunner` | Reads a `WaveDefinition`, schedules spawns over time | **Factory**, ScriptableObject |
+| `EnemyFactory` | Turns an `EnemyDefinition` into a live, pooled enemy | **Factory + Object Pool** |
+| `ProjectilePool` | Recycles projectiles fired by towers | **Object Pool** |
+| `Enemy` | Path following, health, death | **State**, Observer (emits) |
+| `Tower` | Target acquisition, firing | **Polling** (§9), Factory (spawns projectiles) |
+| `Economy` | Currency & lives | **Observer** (emits changes) |
+| `BuildController` | Place/upgrade/sell via undoable actions | **Command** |
+| `InputService` | Touch → world intent | Strategy-ish (one interface, editor vs device) |
+| `HudPresenter` | Listens, renders numbers | **Observer** (subscribes) |
+
+`EventBus` heads the table because it is Core infrastructure the rest lean on, not a gameplay
+system in its own right — everything below it is a `MobileDemo.Gameplay`/`MobileDemo.UI` concern.
+
+---
+
+## 6. Patterns — where, and *where not*
+
+This is the table a reviewer should read first. The right-hand column is the senior part.
+
+### Object Pool — `Core/Pooling/ObjectPool<T>`
+- **Where:** enemies and projectiles. Enemies spawn in dozens per wave; a basic tower
+  fires ~10×/sec. `Instantiate`/`Destroy` at that rate is the classic mobile GC-spike source.
+- **Why it's justified:** it directly serves the mobile constraint. Prewarmed at load
+  (`ENEMY_POOL_PREWARM`, `PROJECTILE_POOL_PREWARM`) so no hitches mid-wave.
+- **Where I did *not* pool:** towers themselves. A handful exist for the whole round and
+  are placed by hand — pooling them would add lifecycle complexity for zero benefit.
+
+### Factory — `EnemyFactory`, projectile creation on `Tower`
+- **Where:** `WaveRunner` asks `EnemyFactory` for "an enemy of this definition." The factory
+  pulls from the pool, applies the `EnemyDefinition` data, and returns a configured instance.
+- **Why it's justified:** it's the seam between *data* (which enemy) and *instance* (a live
+  pooled object), and it's the one place that knows how to wire the two together.
+- **Where I did *not* abstract:** no `AbstractFactory` hierarchy. One concrete factory is
+  enough for two enemy types; an interface here would be architecture cosplay.
+
+### Observer — `Core/Events/EventBus`
+- **Where:** discrete, one-to-many facts: `EnemyKilled`, `EnemyLeaked`, `CurrencyChanged`,
+  `LivesChanged`, `PhaseChanged`, `WaveCompleted`.
+- **Why it's justified:** it's what keeps UI and Gameplay in separate assemblies (§3). The
+  economy doesn't know the HUD exists; it just announces `CurrencyChanged`.
+- **Where I did *not* use it:** tower→target and enemy→path following are *continuous*
+  relationships, not discrete events, so they are plain references, not subscriptions.
+  Firing an event every frame per enemy would be Observer used as a hammer.
+- **Design choice — why a small static `EventBus` and not ScriptableObject event channels:**
+  SO event channels are the trendy Unity answer and I know them, but they add an asset and an
+  editor-wiring step per event for a demo where every subscriber is code. The static typed bus
+  is fewer moving parts and trivially testable. Noted here so the omission is visibly a choice.
+- **Shape:** `EventBus<TEvent>` is a *static generic* class, so closing it over an event type
+  gives that event its own static field — a type-keyed dictionary resolved by the runtime once,
+  rather than a `Dictionary<Type, List<Delegate>>` hashed on every publish. Subscribers are held
+  in a multicast `Action<TEvent>`, which is immutable: a handler that unsubscribes itself mid-
+  dispatch cannot corrupt the in-flight call, and getting that same guarantee from a `List` would
+  cost a defensive copy per publish — an allocation on the one path §10 promises not to allocate
+  on. Payloads are `readonly struct`s marked `IEvent`; being generic over the concrete type, the
+  bus never boxes them.
+- **The one non-obvious requirement — clearing statics between play sessions.** With *Enter Play
+  Mode Options* set to skip domain reload, static subscribers survive into the next session and
+  the second Play throws `MissingReferenceException` from code that reads as correct. A
+  non-generic `EventBus.ClearAll()` runs at `SubsystemRegistration` to prevent that. It needs the
+  indirection of a reset registry because a static generic class cannot be enumerated — there is
+  no way to ask the runtime which closed forms exist, so each one registers itself on first use.
+- **Portability:** the bus and its `IEvent` marker depend on `System` and
+  `System.Collections.Generic` only; the single engine touch, the play-mode reset hook, sits
+  behind `UNITY_5_3_OR_NEWER`. The two files drop into a non-Unity project unchanged, which is
+  also what lets §14 test them outside the editor.
+
+### Command — `Gameplay/Build/ICommand` + `BuildController`
+- **Where:** build-phase actions only — `PlaceTowerCommand`, `UpgradeTowerCommand`,
+  `SellTowerCommand`. `BuildController` pushes each onto an undo stack.
+- **Why it's justified:** Command is the pattern that feels *forced* in a pure action game.
+  A build phase gives it an honest home: undo/redo for free, and a clean, testable input layer
+  (a command can be executed from a test with no touch input at all).
+- **Where I stopped:** undo does **not** cover combat (you can't un-kill an enemy). Undo is
+  scoped to the build phase, where it models a real player affordance ("misclicked, take it back")
+  instead of inventing complexity to show off.
+
+```csharp
+public interface ICommand
+{
+    void Execute();
+    void Undo();
+}
+```
+
+### State — see §4.
+
+### ScriptableObject-driven data — see §7. (Not GoF, but the thing pure-pattern demos miss.)
+
+---
+
+## 7. Data-driven config — ScriptableObjects
+
+All tuning lives in assets, not code. This is both good Unity practice and the reason the
+demo has *no magic numbers* in gameplay classes.
+
+- `GameConfig` — the constants from §2 (currency, lives, frame rate, pool sizes).
+- `EnemyDefinition` — sprite, hp, move speed, currency reward, damage-on-leak.
+- `TowerDefinition` — sprite, cost, range, fire rate, projectile ref, upgrade tiers.
+- `WaveDefinition` — an ordered list of `{ EnemyDefinition, count, spawnInterval }` groups.
+
+Designers (or you, at 2am) can retune the whole game by editing assets in the Inspector —
+no recompile. `EnemyFactory` and `WaveRunner` read these; they never hard-code values.
+
+---
+
+## 8. Event catalogue (Observer contract)
+
+The full list of gameplay events. Keeping it short and enumerated *here* is deliberate — if
+this list starts growing past ~10 entries, that's the signal the EventBus is becoming a dumping
+ground and some of these should go back to direct references.
+
+| Event | Raised by | Consumed by | Payload |
+|---|---|---|---|
+| `EnemyKilled` | `Enemy` | `Economy`, `WaveRunner` | reward, position |
+| `EnemyLeaked` | `Enemy` | `Economy` (lives), `WaveRunner` | damage |
+| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildController` (afford check) | new total |
+| `LivesChanged` | `Economy` | `HudPresenter`, `GameStateMachine` (defeat check) | new total |
+| `PhaseChanged` | `GameStateMachine` | `HudPresenter`, build UI | new phase enum |
+| `WaveCompleted` | `WaveRunner` | `GameStateMachine` | wave index |
+
+---
+
+## 9. Polling vs. events — an explicit decision
+
+Two continuous jobs deliberately use **polling on a tick**, not events:
+
+- **Tower target acquisition.** Each tower re-scans for the nearest in-range enemy every
+  `TOWER_SCAN_INTERVAL_SEC` (0.1s), not every frame and not via an "enemy moved" event.
+  - *Why not every frame:* a 10 Hz scan is imperceptible for TD and cuts the work 6×.
+  - *Why not event-driven:* "enemy entered range" would mean every enemy notifying every
+    tower on every move — a many-to-many event storm that's strictly worse than a cheap poll.
+  This is the honest case where **polling is the right answer** and events would be the naive one.
+- **Enemy path following** advances along waypoints in its own `Tick`. No event per step.
+
+Discrete, rare facts (a death, a phase change) use Observer. Continuous, per-frame-ish
+relationships use polling. The dividing line — *event frequency vs. subscriber count* — is
+stated so the choice looks reasoned.
+
+---
+
+## 10. Mobile-specific notes
+
+- **Input:** `IInputService` exposes `TryGetTap(out Vector2 world)`. A `TouchInputService`
+  on device, an editor implementation reading the mouse — so the demo is playable in-editor
+  without a phone. Nothing else in the game knows which is running.
+- **Rendering:** one sprite atlas → few draw calls. Sprites on a single sorting layer with
+  explicit `orderInLayer`. No per-object materials.
+- **Resolution:** Canvas Scaler set to *Scale With Screen Size* against `REFERENCE_RESOLUTION`,
+  match = 0.5, so it survives from 18:9 to 20:9 without art breaking.
+- **Allocation budget:** zero `Instantiate`/`Destroy` during a wave (that's what §6 pooling
+  buys). Cache `WaitForSeconds`, avoid LINQ in per-tick paths, cache `Transform` references.
+
+### Build & player settings
+
+These are not incidental project settings. Each one backs a claim made elsewhere in this
+document, which is why they are enumerated here and committed to version control instead of
+being left to whoever opens the project next.
+
+| Setting | Value | What it backs |
+|---|---|---|
+| Default orientation | **Portrait**, autorotation off | §2 "Portrait, single screen", and the Canvas Scaler note above |
+| Scripting backend (Android) | **IL2CPP** | Required for the ARM64 build below; AOT also beats Mono on per-frame cost |
+| Target architecture | **ARM64** | Google Play rejects 32-bit-only uploads |
+| Minimum Android API | **26** (Android 8.0) | Covers the mid-range devices §2 targets |
+| Incremental GC | **On** | Spreads collection across frames. It *complements* §6's pooling; it does not remove the reason for it |
+| `Application.targetFrameRate` | **60** | §2's `TARGET_FRAME_RATE`. Unity exposes no project setting for this — it must be assigned in code at boot, read from `GameConfig` |
+
+**Orientation is the one that had to be corrected.** Unity's 2D template ships with
+autorotation enabled for all four orientations, which silently contradicts every layout
+assumption in §2 and in the Canvas Scaler note above — left alone, the board would have
+rotated into landscape on device. It is now portrait-only, deliberately; treat any future
+change here as a change to §2.
+
+**Current state:** everything above is set as listed except `Application.targetFrameRate`,
+which has no bootstrap to live in yet. It arrives with §13's vertical slice.
+
+**Colour space stays at Linear**, the URP default — a decision, not an oversight. Gamma is
+marginally cheaper on mobile and this is a 2D game with no real lighting model, but the 2D
+Renderer and any `Light2D` use are authored against Linear, and re-authoring art to chase a
+small win is not a trade this demo needs. Revisit only if on-device profiling says otherwise.
+
+---
+
+## 11. Folder structure
+
+Flat, by asset type, at the `Assets` root — with code grouped by *assembly* under `Scripts/`,
+because an `.asmdef` boundary is a folder boundary:
+
+```
+Assets/
+  Scripts/
+    Core/           (MobileDemo.Core.asmdef)
+      Events/       EventBus.cs, IEvent.cs, GameEvents.cs
+      Pooling/      ObjectPool.cs, IPoolable.cs
+      Config/       GameConfig.cs
+      Interfaces/   ICommand.cs, IGameState.cs, IInputService.cs
+    Gameplay/       (MobileDemo.Gameplay.asmdef)
+      Phases/       GameStateMachine.cs, BuildState.cs, WaveState.cs, ...
+      Enemies/      Enemy.cs, EnemyFactory.cs, EnemyDefinition.cs
+      Towers/       Tower.cs, TowerDefinition.cs, Projectile.cs
+      Waves/        WaveRunner.cs, WaveDefinition.cs
+      Economy/      Economy.cs
+      Build/        BuildController.cs, PlaceTowerCommand.cs, ...
+      Input/        TouchInputService.cs, EditorInputService.cs
+    UI/             (MobileDemo.UI.asmdef)
+      HudPresenter.cs, BuildMenu.cs, EndScreen.cs
+    Editor/         (MobileDemo.Editor.asmdef — Editor platform only)
+      PathEditor.cs, PoolOverlay.cs
+  Tests/
+    EditMode/       (MobileDemo.Tests.EditMode.asmdef — see §14)
+  Data/             *.asset  (EnemyDefinition, TowerDefinition, WaveDefinition, GameConfig)
+  Art/              sprite atlas + sprites
+  Prefabs/          enemy, tower, projectile prefabs
+  Scenes/           Game.unity
+  Settings/         URP 2D pipeline assets — Unity's 2D template made these; left in place
+```
+
+### Why flat, and not an `Assets/_MobileDemo/` root
+
+Most Unity style guides recommend putting everything you author inside a single
+underscore-prefixed, project-named folder. That convention solves one problem well: Asset
+Store packages dumping their own folder trees into the `Assets` root, plus the related job of
+migrating content between projects.
+
+This project does not have that problem. §15 excludes Asset Store content deliberately, and
+PrimeTween — the one third-party dependency — installs through Package Manager into
+`Packages/`, which never touches `Assets/` at all. Paying an extra nesting level on every path
+to defend against an import that is ruled out by policy is cost without benefit, so the layout
+stays flat. Noted here so the omission reads as "knew the convention and declined it," not
+"hadn't heard of it."
+
+**The trade-off flips if the premise does:** the first Asset Store package that lands in
+`Assets/` is the signal to adopt the `_MobileDemo/` root and move these folders under it.
+
+### Rules this layout does keep
+
+- **`Editor/` is a reserved name, not a stylistic choice.** Unity excludes the contents of any
+  folder called `Editor` from player builds. The §15 tooling (`PathEditor`, the Pool Overlay
+  that reads `IPoolStats`) references `UnityEditor`, so without this folder — and an assembly
+  constrained to the Editor platform — the Android/iOS build fails to compile. The dependency
+  is strictly one-way: editor code may reference runtime code, never the reverse.
+- **No `Resources/`.** It inflates build size unconditionally and offers no async loading.
+  Every ScriptableObject is referenced directly per §7, so nothing here needs it.
+- **Type folders stop at the top level.** No `Art/Textures/` or `Art/Materials/` nesting — the
+  Project window's type filter already does that job, and such folders would only restate it.
+- **PascalCase, no spaces, no Unicode** in folder and asset names. Unity's command-line and
+  batch tooling breaks on all three.
+- **Package references are per-assembly, not global.** `MobileDemo.Gameplay` references
+  `Unity.InputSystem` (the §10 input services); `MobileDemo.UI` references `UnityEngine.UI` and
+  `Unity.TextMeshPro` (§15). `MobileDemo.Core` references nothing but the engine — which is
+  precisely what makes it the layer everything else can safely depend on.
+
+**Status:** every folder above exists, and each code folder carries its `.asmdef` — so the
+dependency graph in §3 is enforced by the compiler from the first line of code rather than
+retrofitted later, when untangling it would mean moving files.
+
+`Art/`, `Data/`, `Prefabs/` and `Scenes/` hold no project content yet. Git does not track
+empty directories, so those four will not survive a clone until real assets land in them;
+§13's vertical slice is what fills them. Anything still empty when the demo ships should be
+deleted rather than committed as decoration.
+
+---
+
+## 12. Deliberately out of scope
+
+Listed so their absence is legibly a decision:
+save/meta-progression, multiple maps, more than two enemy/tower types, audio, IAP/ads,
+analytics, localisation, networking, object-pool auto-growth beyond prewarm (fixed budget
+is fine for one known wave sequence).
+
+---
+
+## 13. First vertical slice (build this before anything else)
+
+Prove the spine end-to-end with the *fewest* moving parts, then grow it:
+
+1. One `EnemyDefinition`, one hard-coded path (waypoints in the scene).
+2. A pooled spawner (`ObjectPool<Enemy>` + `EnemyFactory`) releases one enemy.
+3. The enemy follows the path, reaches the end, and raises `EnemyLeaked`.
+4. A single `HudPresenter` label subscribed to the bus decrements a lives counter.
+
+That slice exercises Pool + Factory + Observer + enemy State with **no towers, no waves,
+no build UI, no commands**. When it runs clean, we add the first tower (introducing polling
+and projectile pooling), then the build phase (Command), then the wave sequence and phases.
+One verified slice at a time.
+
+---
+
+## 14. Testing (lightweight, but present)
+
+EditMode tests where they're cheap and meaningful — exactly the seams the patterns created:
+`EventBus` (deliver/unsubscribe/isolation per type, `ClearAll`), `ObjectPool` (get/release/reuse,
+no leak), each `ICommand` (execute then undo restores state), `Economy`
+(spend/earn/insufficient-funds), `GameStateMachine` (legal transitions only). These pass without a
+scene, because Command and the EventBus decoupled the logic from Unity objects — which is the
+practical payoff of the architecture, not just theory.
+
+The `EventBus` tests also pin two behaviours the implementation's §6 reasoning depends on and that
+a future refactor could silently break: that a handler unsubscribing mid-publish still lets the
+rest of that dispatch through (the multicast snapshot), and that subscribing the same handler
+twice calls it twice (no hidden de-duplication). Both are asserted deliberately, so changing them
+has to be a decision rather than an accident.
+
+These live in `Assets/Tests/EditMode` under `MobileDemo.Tests.EditMode`. It references
+`MobileDemo.Core` and `MobileDemo.Gameplay` — deliberately *not* `MobileDemo.UI`, since none of
+the four targets above is a UI class — plus `UnityEngine.TestRunner` / `UnityEditor.TestRunner`
+and NUnit. It is restricted to the Editor platform and gated behind a `UNITY_INCLUDE_TESTS`
+define constraint, so no test code can reach a player build.
+
+`Assets/Tests/` sits at the root rather than inside `Scripts/` because that is where Unity's
+Test Runner creates test assembly folders by default, and it mirrors Unity's own package
+layout, where `Tests` is a sibling of `Runtime` and `Editor` rather than nested inside them.
+
+---
+
+## 15. Dependencies & third-party packages
+
+Dependency policy for a portfolio demo is the inverse of a shipping game: every plugin
+is a liability as much as a help, because a reviewer can't tell what was built from what
+was bought. So the list is short, and the **excluded** list below is as much a signal as
+the included one — it shows the same judgment as §6's "where I did *not* use it."
+
+### First-party (Unity packages) — included
+| Package | Why it's here | Ties to |
+|---|---|---|
+| **Input System** | Touch handling, sat behind `IInputService` (device vs editor impl) | §10 |
+| **2D Sprite + Sprite Atlas** | The atlas is what *backs* the draw-call budget — not optional flavor | §10 |
+| **TextMeshPro** | Crisp scalable UI text; its absence would look odd | §5 UI |
+| **Test Framework (UTF)** | Runs the EditMode tests; without it §14 is just a claim | §14 |
+
+*(2D Tilemap only if the map is grid-authored; otherwise it's dead weight.)*
+
+### First-party built-in — a stated pooling decision
+Unity ships `ObjectPool<T>` in `UnityEngine.Pool`. This project rolls its own instead, for
+two demo-specific reasons: to **demonstrate the pattern** rather than hide it behind a call,
+and to expose `IPoolStats`/`PeakActive` so the Pool Overlay tool can read live counts — which
+the built-in doesn't surface. `UnityEngine.Pool` is the correct production default; rolling
+our own here is a deliberate, demo-motivated choice, recorded so it reads as "knew and chose,"
+not "didn't know."
+
+### Third-party — exactly one
+- **PrimeTween** — for game feel (placement pop, hit-flash, UI slides). Polish is
+  disproportionately what makes a demo read as *finished*. Chosen over the more popular
+  **DOTween** specifically because PrimeTween is **allocation-free**, which is consistent
+  with this project's zero-allocation-during-a-wave thesis; DOTween allocates on each tween
+  start and would quietly contradict that claim. Free, installs via Package Manager. DOTween
+  remains the fair alternative if its richer sequencing is ever needed.
+
+### Deliberately excluded
+| Not used | Why |
+|---|---|
+| **Odin Inspector** | Would replace the hand-written custom editors (`PathEditor`) — that tooling *is* the flex here |
+| **DI frameworks** (VContainer / Zenject) | Over-abstraction at this scale; reads as cargo-culting, not competence |
+| **Ads / IAP / analytics** (Unity Gaming Services) | Out of scope per §12; dilutes a focused demo into a half-built product |
+| **Asset-store TD kits, behaviour-tree assets** | They do exactly the work the demo exists to demonstrate |
+| **Cinemachine** | No camera movement on a static portrait board — pure noise |
+
+### Process (not a package, but assumed)
+Git + a Unity `.gitignore`. Version control is a baseline requirement in the roles this demo
+targets, and a clean commit history is itself portfolio evidence. Unity's own Version Control
+is free, but Git is the expected standard.
