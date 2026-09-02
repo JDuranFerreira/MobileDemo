@@ -80,8 +80,12 @@ buying nothing.
 ## Gotchas
 
 - **Subscribe in `OnEnable`, unsubscribe in `OnDisable`.** Not `Awake`/`OnDestroy` — a disabled or
-  pooled object left subscribed still receives events and acts on them. This is the live trap once
-  §6's pooling lands, because a pooled enemy is *disabled, not destroyed*.
+  pooled object left subscribed still receives events and acts on them. This is the live trap now
+  that §6's pooling has landed, because a pooled enemy is *disabled, not destroyed*.
+  [`ObjectPool<T>`](object-pool.md) deliberately leaves `OnEnable`/`OnDisable` alone, calling
+  `IPoolable.OnSpawn`/`OnDespawn` instead, precisely so this pairing stays free for subscribers.
+  The ordering consequence is the pool's to document: `OnEnable` runs *before* `OnSpawn`, so a
+  handler wired up in `OnEnable` must not assume `OnSpawn` has reset anything yet.
 - **The bus holds strong references.** A subscriber that never unsubscribes is never collected.
   Every `Subscribe` needs a matching `Unsubscribe` on the same delegate instance.
 - **Unsubscribe needs the *same* delegate.** `Unsubscribe(e => Foo(e))` after
