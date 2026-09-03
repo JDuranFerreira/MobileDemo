@@ -17,10 +17,19 @@ That reasoning lives in this document and in short inline comments at each decis
 point, never in extra layers of code. If a pattern isn't pulling its weight, it isn't here.
 
 ### Scope, deliberately bounded
-- **One** map, **one** wave sequence, **two** enemy types, **two** tower types.
-- Build phase → wave phase → win/lose. That's the whole loop.
+- **Three** maps played in sequence, **one** wave sequence each, **two** enemy types, **two**
+  tower types.
+- Build phase → wave phase → win/lose. That's the whole loop, repeated per map.
+- **Lives carry over across all three maps** — one pool for the whole run, so losing on map 3
+  restarts the run. That single decision is why `STARTING_LIVES` is a *run* constant and not
+  per-map data (§7), and why `Defeat` is not per-map (§4).
 - No meta-progression, no save system, no ads/IAP, no networking, no audio mixing.
   These are called out again in §12 so their absence reads as a decision, not a gap.
+
+**Three maps is not a campaign system.** A map is a prefab that gets swapped, not a scene that
+gets loaded — the whole feature is one component and three prefabs, with no level select, no
+unlock state and nothing persisted. That distinction is what keeps it inside the bounded scope
+above rather than reopening §12's meta-progression exclusion.
 
 ---
 
@@ -48,11 +57,29 @@ PROJECTILE_POOL_PREWARM   = 128
 
 No magic numbers in gameplay code — everything above is read from config assets.
 
-The two pool figures are the only entries not yet backed by an asset. `ObjectPool<T>` takes
-`prewarm` as a **constructor argument**, so today they are supplied by whoever constructs the pool;
-they move onto `GameConfig` when §13's slice creates it, and deliberately not before — a
-ScriptableObject holding one field is an asset for its own sake, and a ctor argument is what keeps
-the pool testable with no asset and no scene (§14).
+`GameConfig` now exists (§13's slice created it) and carries **three** of the seven:
+`TARGET_FRAME_RATE`, `STARTING_LIVES`, `ENEMY_POOL_PREWARM`. The other four are deliberately not
+on it:
+
+- `STARTING_CURRENCY` — nothing earns or spends yet. A serialized knob nothing reads lies about
+  being tunable. It arrives with `Economy`'s currency half, i.e. the first `ICommand` that spends.
+- `PROJECTILE_POOL_PREWARM` — there is no `Projectile`, so there is nothing to size. The
+  ctor-argument reasoning below still holds verbatim for this one entry.
+
+`ENEMY_POOL_PREWARM` is a **run** constant, not a per-level one: the pool is built once at boot
+and survives every level swap, so it must be sized for the *worst* of §1's three maps rather than
+the current one. Three levels therefore strengthens this field's place on `GameConfig`. The
+practical consequence for tuning is that `PeakActive` (§10) has to be read after a full run
+across all three, not after map 1.
+- `REFERENCE_RESOLUTION` — configured on the scene's `CanvasScaler`, which is where Unity reads
+  it. A copy on the asset would be a second source of truth that nothing consults.
+- `TOWER_SCAN_INTERVAL_SEC` — no towers.
+
+**`ENEMY_POOL_PREWARM` moving onto the asset did not change `ObjectPool<T>`.** `prewarm` is still
+a **constructor argument**: `GameConfig` supplies the number to `Bootstrap`, which passes it to
+`new ObjectPool<Enemy>(...)`. The pool has no idea the asset exists, and `ObjectPoolTests` still
+constructs pools with a literal — which is what keeps it testable with no asset and no scene
+(§14).
 
 ---
 
@@ -80,6 +107,11 @@ Rule: **UI never reads gameplay state directly and Gameplay never references UI.
 They meet only through events (§8). If a `using UI;` ever appears in a Gameplay file,
 the build breaks — which is the point.
 
+The rule is now visible rather than asserted: the project's first UI file, `HudPresenter.cs`,
+names only `MobileDemo.Core.Events`, `TMPro` and `UnityEngine`. And it is why the composition
+root (`Bootstrap`, §5) sits *inside* Gameplay rather than in a fifth assembly above UI — it never
+needs to name a UI type, because `HudPresenter` subscribes itself.
+
 Assemblies are named `MobileDemo.<Layer>`, not bare `Core` / `Gameplay` / `UI`. A bare
 `UI.asmdef` produces an assembly called literally `UI` — generic enough to collide with a
 package, and it tells a reader nothing about where the code came from. The prefix is the
@@ -103,9 +135,17 @@ stateDiagram-v2
     Wave --> Build : wave cleared & waves remain
     Wave --> Victory : last wave cleared
     Wave --> Defeat : lives == 0
-    Victory --> [*]
+    Victory --> Build : levels remain (swap in the next map)
+    Victory --> [*] : last level cleared
     Defeat --> [*]
 ```
+
+**`Victory` is per level, not per run — and `Defeat` is the opposite.** Clearing the last wave of
+map 1 or 2 swaps in the next level's prefab and returns to `Build`; only the last map's victory
+ends the run. `Defeat` is terminal for the whole run, because §1's lives carry over: there is one
+life pool across all three maps, so hitting zero on map 3 is not "retry map 3". The asymmetry is
+the interesting part — it comes entirely from the carry-over decision, and flipping that one
+answer would flip both transitions.
 
 ```csharp
 public interface IGameState
@@ -119,10 +159,26 @@ public interface IGameState
 `GameStateMachine` owns the current `IGameState`, forwards `Tick`, and swaps states.
 Each state is tiny and does one thing: `BuildState` enables the build UI and pauses
 spawning; `WaveState` drives the active `WaveRunner`; `VictoryState`/`DefeatState`
-freeze the board and raise a single event for the UI.
+freeze the board and raise a single event for the UI. `VictoryState` is also where the level swap
+belongs, which is why `LevelRunner` (§5) waits on this machine rather than arriving first —
+building it sooner would mean inventing a second, parallel notion of "round over".
 
 Enemies get their *own* micro state machine (`Spawning → Moving → Dying`) — same
 interface, different scope. Reusing the shape shows the pattern generalises.
+
+**The enemy's machine shipped first**, ahead of `GameStateMachine`, because §13's slice has no
+phases: a one-state round machine would demonstrate nothing and be rewritten once real phases
+exist. Three things that fell out of building it, recorded because they are the parts a reader
+cannot infer:
+
+- **What justifies classes over an enum plus a `switch`** (which would be ~30 lines shorter):
+  `EnemyMovingState` owns its own `waypointIndex` and re-zeroes it in `Enter()`, so the pooling
+  reset for the path cursor *is* the pattern, rather than another line in `OnSpawn`.
+- **State instances are constructed once, in `Awake`, never in `OnSpawn`.** `OnSpawn` is the
+  pool's "sole initializer" and so is the tempting home — but a 64-enemy wave would then allocate
+  192 objects mid-wave, the exact spike §2 calls pooling mandatory to prevent.
+- **The cost:** three empty `Exit()` bodies. That is what sharing §4's interface buys, and `Exit`
+  earns its keep in the round's machine, where `BuildState.Exit()` disables the build UI.
 
 ---
 
@@ -141,6 +197,16 @@ interface, different scope. Reusing the shape shows the pattern generalises.
 | `BuildController` | Place/upgrade/sell via undoable actions | **Command** |
 | `InputService` | Touch → world intent | Strategy-ish (one interface, editor vs device) |
 | `HudPresenter` | Listens, renders numbers | **Observer** (subscribes) |
+| `Level` | Owns one map's path — and later its wave sequence. The unit that gets swapped | **none** — a prefab-root component, not an asset (see §7) |
+| `LevelRunner` | Swaps in the next level's prefab on victory | planned — waits on `GameStateMachine` (§4) |
+| `Bootstrap` | Composition root: builds pool, factory and economy from `GameConfig`, sets the frame rate, drives the tick | **none** — deliberately not a Service Locator or DI container (§15 declines both) |
+
+**This table is a design, not an inventory.** What has code today: `EventBus`, `ObjectPool<T>`,
+`EnemyFactory`, `Enemy`, `Level`, `Bootstrap`, `HudPresenter`, and `Economy` — the last of which
+is **lives only** until something can spend (§8's `CurrencyChanged` therefore has no publisher
+yet, which is fine: §8 is a contract). Still names only: `GameStateMachine`, `WaveRunner`,
+`LevelRunner`, `Tower`, `BuildController`, `InputService`. `Bootstrap` is last in the table
+because it is the only row that is *meant* to shrink — see §13.
 
 `EventBus` and `ObjectPool<T>` head the table because they are Core infrastructure the rest lean
 on, not gameplay systems in their own right — everything below them is a
@@ -295,6 +361,39 @@ demo has *no magic numbers* in gameplay classes.
 Designers (or you, at 2am) can retune the whole game by editing assets in the Inspector —
 no recompile. `EnemyFactory` and `WaveRunner` read these; they never hard-code values.
 
+**Today:** `GameConfig` carries three of §2's seven constants (that list says which, and why the
+rest are absent). `EnemyDefinition` carries all five fields above plus `spawnDelaySeconds`, the
+placed-but-not-moving window `EnemySpawningState` owns. `TowerDefinition` and `WaveDefinition`
+have no code. Two `EnemyDefinition` fields — `maxHealth` and `currencyReward` — are **authored but
+unread** until towers exist: a deliberate call, so the asset is authored once and completely. The
+line that is *not* crossed is `Enemy.currentHealth`, because a data knob a future system will read
+is a knob, while a field on a live object with no writer reads as working code.
+
+Both types carry `[CreateAssetMenu]`, and `Data/GameConfig.asset`, `Data/EnemyGreenSoldier.asset`
+and `Data/EnemyGreySoldier.asset` are now authored. The two soldiers differ **only** as data —
+they share one prefab — which is the §6 Factory claim made concrete: grey is slower, tougher and
+worth more, and adding it cost an asset rather than a type.
+
+### Why `STARTING_LIVES` is on `GameConfig` and not on a level
+
+It reads like per-level data, and the next reader will assume it is. It isn't: §1's lives **carry
+over across all three maps**, so there is one life pool for the whole run and "starting lives" is
+a *run* constant — the same category as `TARGET_FRAME_RATE`. Had lives reset per map, this field
+would belong on `Level` and `Economy` would be rebuilt on every swap. Recorded here because the
+reasoning is the only thing that distinguishes the two cases, and the wrong guess is a plausible
+"fix".
+
+### Why per-level data lives on a prefab component, not a `LevelDefinition` asset
+
+§7's rule is that tuning belongs in assets, so a `LevelDefinition` ScriptableObject is the
+expected answer here and it was declined. A map's defining content is a `SpriteRenderer` and an
+`EnemyPath` — waypoint `Transform`s, which can only exist on a GameObject. The prefab therefore
+*is* the level whether or not an asset also describes it, and adding the asset would mean two
+artifacts per level to keep in sync plus a real failure mode: a definition pointing at the wrong
+prefab. So `Level` is a component on the prefab root, and the `WaveDefinition[]` it will carry is
+a reference to assets rather than a reason to become one. The ScriptableObject case comes back if
+level tuning ever needs to be compared side by side without opening three prefabs.
+
 ---
 
 ## 8. Event catalogue (Observer contract)
@@ -330,6 +429,29 @@ Discrete, rare facts (a death, a phase change) use Observer. Continuous, per-fra
 relationships use polling. The dividing line — *event frequency vs. subscriber count* — is
 stated so the choice looks reasoned.
 
+### Who calls `Tick` — a third explicit decision
+
+**Enemies are ticked by the composition root, not by their own `Update`.** `Bootstrap.Update`
+walks a `List<Enemy>` and calls `enemy.Tick(dt)`; `Enemy` has no `Update` at all. Why:
+
+- **This section's own vocabulary is `Tick`.** A driven `Tick(float dt)` makes the sentence above
+  literally true, and it makes the enemy's micro machine and the round's machine driven
+  *identically* — which is the point §4 makes about reusing the shape.
+- **Testability, and there is no PlayMode assembly (§12).** `enemy.Tick(0.016f)` is callable from
+  an EditMode test with a deterministic `dt`; `Update` is not callable at all. This is what buys
+  `EnemyTests`, so it is the concrete reason rather than a theoretical one.
+- **Pausing is free**, and §4's `BuildState` needs it: a driven tick pauses by not being called,
+  where 64 `Update`s pause by 64 `enabled` writes or a `timeScale` hack that also freezes UI.
+- **Order is deterministic.** Undefined `Update` order between pooled instances is real
+  frame-to-frame variance; one loop is one order.
+
+The interop saving (one native→managed crossing per frame instead of 64) is real but is *not* the
+argument — at this scale it is not the dominant cost, and claiming otherwise would be a
+measurement we did not take. **The honest cost** is that `Bootstrap` must own the live-enemy list
+and ~10 lines of add/remove bookkeeping that `Update` would have given for free. The pool cannot
+supply that list: it deliberately does not expose its active set, and asking it to would make it
+a registry. Those are the same ten lines `WaveRunner` inherits.
+
 ---
 
 ## 10. Mobile-specific notes
@@ -347,7 +469,13 @@ stated so the choice looks reasoned.
   console line rather than a missing enemy. That makes **a clean console across a full wave** the
   thing that actually certifies this budget, and `PeakActive` after a run the number prewarm should
   be tuned to — which is what gives `IPoolStats` a job today, with the §15 overlay still unbuilt.
+  `PeakActive` now has a real reader: `EnemyFactory.Stats`, logged once by `Bootstrap.OnDestroy`.
   Cache `WaitForSeconds`, avoid LINQ in per-tick paths, cache `Transform` references.
+- **The sprite atlas does not exist yet, and that is a dated decision rather than an oversight.**
+  With one enemy sprite and one background there is nothing measurable to batch, and a two-sprite
+  atlas is the kind of decoration §1 disowns. **Named trigger: the second enemy type** — the first
+  moment two enemy sprites share a frame and batching has something to merge. Until then the
+  draw-call bullet above is design intent, not a measurement.
 
 ### Build & player settings
 
@@ -370,8 +498,15 @@ assumption in §2 and in the Canvas Scaler note above — left alone, the board 
 rotated into landscape on device. It is now portrait-only, deliberately; treat any future
 change here as a change to §2.
 
-**Current state:** everything above is set as listed except `Application.targetFrameRate`,
-which has no bootstrap to live in yet. It arrives with §13's vertical slice.
+**Current state:** everything above is set as listed. `Application.targetFrameRate` now has code
+behind it — `Bootstrap.Awake` assigns it from `GameConfig.TargetFrameRate` — though it does not
+actually run until §13's scene wiring is done.
+
+**One caveat on that row, worth committing because it is silent.** `Application.targetFrameRate`
+is *ignored* whenever `QualitySettings.vSyncCount != 0`. The project runs quality level 0, where
+`vSyncCount` is 0, so it holds today — but Medium and above ship `vSyncCount: 1`, so changing
+quality level voids the row with no error and no log. Not worth defensive code; worth knowing
+before profiling a frame rate that will not budge.
 
 **Colour space stays at Linear**, the URP default — a decision, not an oversight. Gamma is
 marginally cheaper on mobile and this is a 2D game with no real lighting model, but the 2D
@@ -394,8 +529,10 @@ Assets/
       Config/       GameConfig.cs
       Interfaces/   ICommand.cs, IGameState.cs, IInputService.cs
     Gameplay/       (MobileDemo.Gameplay.asmdef)
+      Bootstrap.cs                         (composition root — §5, §13)
       Phases/       GameStateMachine.cs, BuildState.cs, WaveState.cs, ...
-      Enemies/      Enemy.cs, EnemyFactory.cs, EnemyDefinition.cs
+      Enemies/      Enemy.cs, EnemyStates.cs, EnemyFactory.cs, EnemyDefinition.cs, EnemyPath.cs
+      Levels/       Level.cs, LevelRunner.cs        (LevelRunner planned — §4)
       Towers/       Tower.cs, TowerDefinition.cs, Projectile.cs
       Waves/        WaveRunner.cs, WaveDefinition.cs
       Economy/      Economy.cs
@@ -407,11 +544,14 @@ Assets/
       PathEditor.cs, PoolOverlay.cs        (both planned — §12)
   Tests/
     EditMode/       (MobileDemo.Tests.EditMode.asmdef — see §14)
-  Data/             *.asset  (EnemyDefinition, TowerDefinition, WaveDefinition, GameConfig)
-  Art/              sprite atlas + sprites
-  Prefabs/          enemy, tower, projectile prefabs
-  Scenes/           Game.unity
+  Data/             *.asset  (GameConfig, EnemyGreenSoldier, EnemyGreySoldier;
+                             Tower/Wave definitions planned)
+  Art/              sprites (atlas still deferred — §10)
+    Sprites/Environment/   the three §1 maps: variant1..3
+  Prefabs/          EnemySoldier.prefab, Level_01..03.prefab  (tower, projectile planned)
+  Scenes/           Gameplay.unity
   Settings/         URP 2D pipeline assets — Unity's 2D template made these; left in place
+  TextMesh Pro/     TMP Essential Resources — a one-time import, committed; see §15
 ```
 
 Outside `Assets/`, the repo root holds one authored folder: **`Tools/`**, for scripts that act
@@ -460,44 +600,157 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
   one type lives beside that type instead — which is why `IPoolable` and `IPoolStats` sit in
   `Pooling/` and not in `Interfaces/`. Grouping interfaces by the fact that they are interfaces
   would be filing by C# keyword rather than by responsibility.
+- **`EnemyPath.cs` sits in `Enemies/` rather than earning a `Path/` folder.** Same rule as the
+  bullet above, one level up: a folder holding one file that serves one system is filing by noun,
+  not by responsibility. **Named trigger to move it:** the first *non-enemy* runtime consumer of
+  the path — say a build-slot system asking how far a tile is from the road. `Scripts/Editor/
+  PathEditor.cs` is deliberately **not** that trigger, because editor→runtime is the one-way
+  dependency this section already permits.
+- **`Gameplay/Levels/` holds one file today and still gets a folder**, which is not a
+  contradiction of the bullet above. The test is not "how many files" but "does the folder name a
+  responsibility that will hold more than one" — `Levels/` gains `LevelRunner.cs` with §4's
+  machine, exactly as `Economy/` started with one file and will gain the currency half. `Path/`
+  failed that test because the path is *part of* the enemy system, not a system beside it.
+- **The three enemy states share `EnemyStates.cs`**, following `GameEvents.cs`'s precedent: small
+  types that only ever change together read better as one catalogue. Deliberately asymmetric with
+  `Phases/`, which *will* split `BuildState.cs` and `WaveState.cs` — those are several times the
+  size and are the round's readable spine, so one-per-file earns its place there and not here.
+- **`Economy.cs` lives in `Economy/` but its namespace is `MobileDemo.Gameplay`, and that is a
+  compile error avoided rather than an inconsistency.** With the class in
+  `MobileDemo.Gameplay.Economy`, any file inside `MobileDemo.Gameplay` — `Bootstrap.cs` — writing
+  `Economy economy;` resolves `Economy` against its enclosing namespace's members *before*
+  consulting `using` directives, finds the **namespace**, and fails `CS0118: 'Economy' is a
+  namespace but is used like a type`. The folder keeps its name; only the namespace flattens.
+  Said here and at the top of the file, or the next reader "fixes" it straight back into CS0118.
+- **`Bootstrap.cs` sits at the Gameplay root, not in a subfolder**, matching `HudPresenter.cs` at
+  the UI root. It is not a system in the `Enemies/`/`Phases/` sense; it is the seam that
+  assembles them.
+- **`Assets/TextMesh Pro/` does not trip the `_MobileDemo/` trigger below.** That trigger is
+  *Asset Store* content landing in the `Assets` root; TMP Essential Resources is a first-party
+  Unity package resource that Unity's own importer puts there and expects to find there. Said
+  explicitly, or the rule reads as ignored the first time someone sees the folder.
 
-**Status:** the tree above is the target layout. What exists today is every `.asmdef` — `Core`,
-`Gameplay`, `UI`, `Editor`, `Tests/EditMode` — so the §3 dependency graph is enforced by the
-compiler from the first line of code rather than retrofitted later, when untangling it would mean
-moving files. Leaf folders appear as their code does: `Core/Events` and `Core/Pooling` exist;
-`Core/Config`, `Core/Interfaces` and the whole `Gameplay/` and `UI/` subtrees are still only names
-in this table.
+**Status:** every `.asmdef` exists — `Core`, `Gameplay`, `UI`, `Editor`, `Tests/EditMode` — so the
+§3 dependency graph has been enforced by the compiler from the first line of code rather than
+retrofitted later, when untangling it would have meant moving files. Four of the five now hold
+code; `Editor` is still an empty shell, waiting on `PathEditor` and the Pool Overlay (§12).
 
-Of the asset folders, only `Art/` and `Scenes/` hold content — sprites for towers and projectiles,
-and Unity's `SampleScene.unity` (the `Game.unity` named above does not exist yet). `Data/` and
-`Prefabs/` are empty, and §13's vertical slice is what fills them; anything still empty when the
-demo ships should be deleted rather than committed as decoration. Note that git does not track
-empty directories but *does* currently track their `.meta` files, so a fresh clone gets orphan
-`.meta`s that Unity deletes on first open — worth a cleanup pass, and called out here so the next
-reader knows the diff is expected rather than damage.
+Leaf folders appear as their code does. **With code:** `Core/Events`, `Core/Pooling`,
+`Core/Config`, `Core/Interfaces`, `Gameplay/Enemies`, `Gameplay/Economy`, `Gameplay/Levels`,
+`Gameplay/` root (`Bootstrap.cs`), `UI/` root (`HudPresenter.cs`), `Tests/EditMode`. **Still only
+names in this table:** `Gameplay/Phases`, `Gameplay/Towers`, `Gameplay/Waves`, `Gameplay/Build`,
+`Gameplay/Input`, and `Editor/`.
+
+Of the asset folders, `Art/`, `Scenes/`, `Data/` and `Prefabs/` now hold content: sprites, Unity's
+`SampleScene.unity` still under that name, the three config/definition assets, and
+`EnemySoldier.prefab` + `Level_01.prefab`. **`TextMesh Pro/` is the one that does not exist yet**
+— it is the HUD half of §13, and the `Gameplay.unity` in the tree above is still the target name
+rather than the current one.
+
+**Why the enemy prefab is `EnemySoldier.prefab` and not `Enemy.prefab`.** Prefab identity here is
+per *body shape*, not per "enemy": the green and grey soldiers share a silhouette, so they share a
+prefab and differ only as `EnemyDefinition` data, while the planned tanks need their own prefab
+and cannot. A file called `Enemy.prefab` would have to mean "the soldier one" the moment the tank
+lands, so it is named for what it actually is. The consequence is recorded in
+[systems/enemy-factory.md](systems/enemy-factory.md): a second prefab means a second pool, so the
+tank slice changes `EnemyFactory` rather than only adding assets.
+Anything still empty when the demo ships (`Art/UI/` included) should be deleted rather than
+committed as decoration. Note that git does not track empty directories but *does* track their
+`.meta` files, so a fresh clone can get orphan `.meta`s that Unity deletes on first open — worth a
+cleanup pass, and called out here so the next reader knows that diff is expected rather than
+damage.
 
 ---
 
 ## 12. Deliberately out of scope
 
 Listed so their absence is legibly a decision:
-save/meta-progression, multiple maps, more than two enemy/tower types, audio, IAP/ads,
+save/meta-progression, more than two enemy/tower types, audio, IAP/ads,
 analytics, localisation, networking.
 
 Still out of scope, and specific to §6's pooling: a pool registry or editor overlay for live counts
 (`IPoolStats` exists for it; the tool does not), pool `Clear`/`Dispose` and cross-scene pool
 lifetime, pooling anything other than enemies and projectiles, and a PlayMode test assembly.
 
-**One entry has been removed from this list rather than kept.** *Object-pool auto-growth beyond
-prewarm* was listed here as out of scope, with the reasoning that a fixed budget is fine for one
-known wave sequence. Growth is now implemented, so the entry cannot stand; the reversal and what it
-cost are recorded at the decision point in §6's Object Pool entry, not deleted.
+**Two entries have been removed from this list rather than kept.**
+
+*Object-pool auto-growth beyond prewarm* was listed here as out of scope, with the reasoning that
+a fixed budget is fine for one known wave sequence. Growth is now implemented, so the entry cannot
+stand; the reversal and what it cost are recorded at the decision point in §6's Object Pool entry,
+not deleted.
+
+***Multiple maps* was the second, and this one is a scope reversal rather than an implementation
+one.** It was listed on the reasoning that one map is enough to demonstrate a tower-defense round,
+which is still true — but it answered the wrong question. The cost of a second map is not a
+level-management system; it is a prefab swap, because a map *is* a `SpriteRenderer` plus an
+`EnemyPath` and both already live on a GameObject. Three maps therefore cost one `Level` component
+and three prefabs (§5, §11), and the art for all three was already in the repo. What the reversal
+does buy back is a real demand on the phase machine — `Victory` stops being terminal (§4) — and
+that is the part worth reading as the price rather than the feature. Still excluded, and worth
+saying because it is the line this reversal does *not* cross: no level select, no unlock state,
+nothing persisted between runs. That is §12's save/meta-progression entry, which stands.
 
 ---
 
-## 13. First vertical slice (build this before anything else)
+## 13. First vertical slice — **spine running; HUD authoring pending**
 
-Prove the spine end-to-end with the *fewest* moving parts, then grow it:
+Every type the slice needs exists, compiles and is tested: `GameConfig`, `IGameState`, `Economy`,
+`EnemyDefinition`, `EnemyPath`, `Enemy` + its three states, `EnemyFactory`, `Level`, `Bootstrap`,
+`HudPresenter`, and 28 new EditMode tests (§14).
+
+**The spawn/pool/path/leak spine has now been authored and run.** What is done:
+
+1. ✅ `Data/GameConfig.asset`, `Data/EnemyGreenSoldier.asset` and `Data/EnemyGreySoldier.asset`.
+   Grey is a second *definition*, not a second prefab — see §7.
+2. ✅ `Prefabs/EnemySoldier.prefab` — `SpriteRenderer` (order 10, above the map's 0) + `Enemy`, no
+   collider, **root left active** (see [systems/object-pool.md](systems/object-pool.md) for why
+   that is not cosmetic). Named for the body shape, not for "enemy" — reasoning in §11.
+3. ✅ **`Prefabs/Level_01.prefab`** — root carries `Level`, with the map `SpriteRenderer`
+   (`variant1_riverside_switchback`, order 0) and an `EnemyPath` GameObject plus ten waypoint
+   children, `Level.Path` assigned inside the prefab, one instance in the scene. Authoring the
+   level as a prefab *now* is what stops maps 2 and 3 requiring a restructure later.
+4. ✅ Scene wiring: `PoolRoot` (scale exactly 1, at the scene root — **not** a child of the level,
+   because pooled enemies must outlive a level swap) and `Bootstrap`'s six references.
+
+What is still outstanding, and why the slice is **not** yet complete:
+
+5. `Window > TextMeshPro > Import TMP Essential Resources` — without it the HUD label renders
+   nothing, silently (§15).
+6. The HUD Canvas whose Canvas Scaler carries §2's `REFERENCE_RESOLUTION` at match 0.5, with
+   `HudPresenter.livesLabel` assigned. **Until this exists, `EnemyLeaked` → `Economy` →
+   `LivesChanged` fires into nothing visible** — step 4 of the four below is unproven.
+7. Rename `Scenes/SampleScene.unity` → `Scenes/Gameplay.unity` (F2 in the Project window, so the
+   guid survives and `EditorBuildSettings.asset` needs only its path rewritten).
+
+`Level_02` and `Level_03` are deliberately **not** authored yet: one prefab proves the shape, and
+the other two arrive with the swap itself, which waits on §4's machine.
+
+**The slice is certified by running it, not by the tests.** What has been seen, on
+`SampleScene.unity` at `spawnIntervalSeconds = 2`:
+
+- Enemies spawn, walk the switchback and leak at the end; all eight on-screen sit on the road art.
+- **The pool recycles.** Across ~40 spawns over 81 s, `PoolRoot`'s child count held at exactly 64
+  and the active count plateaued at 8 — the number the path length predicts (≈23.7 units at speed
+  1.5 ≈ 16 s alive ÷ a 2 s interval). A pool that was not recycling would have shown active
+  climbing with the spawn count.
+- `Pool 'EnemySoldier': PeakActive=9, InstanceCount=64, Prewarm=64` on exit —
+  `InstanceCount == Prewarm` is the durable record that it never grew, and **no growth warning
+  was logged**.
+- Three consecutive play sessions, clean each time: no `MissingReferenceException`, so
+  `EventBus.ClearAll()` is doing its job with domain reload off
+  (`m_EnterPlayModeOptions: 1` is set).
+- 70 EditMode tests green.
+
+One caveat worth recording rather than hiding: Unity does not tick while unfocused, so the run
+needed `Application.runInBackground = true`. That is a *harness* fact about driving the editor
+from outside, not a property of the game.
+
+Mark this section done when the HUD half above has been seen too.
+
+Then the next slice is **the first tower** (introducing §9's polling and projectile pooling), then
+the build phase (Command), then the wave sequence and phases.
+
+The four steps, kept rather than deleted, because the order is the argument:
 
 1. One `EnemyDefinition`, one hard-coded path (waypoints in the scene).
 2. A pooled spawner (`ObjectPool<Enemy>` + `EnemyFactory`) *gets* one enemy — `Release` is the
@@ -509,6 +762,30 @@ That slice exercises Pool + Factory + Observer + enemy State with **no towers, n
 no build UI, no commands**. When it runs clean, we add the first tower (introducing polling
 and projectile pooling), then the build phase (Command), then the wave sequence and phases.
 One verified slice at a time.
+
+### What the slice deliberately did *not* do
+
+Each of these was reachable and was left out, because building it would have meant a type with no
+caller or a field with no writer:
+
+- **No `GameStateMachine`, `BuildState`, `WaveState` or `PhaseChanged` publisher** — no phases
+  exist, and a one-state machine proves nothing. `Bootstrap.Update` is the placeholder, with
+  successors named in [systems/bootstrap.md](systems/bootstrap.md).
+- **No `WaveRunner` / `WaveDefinition`** — `Bootstrap`'s spawn timer is the honest stand-in.
+- **No `IInputService`** and no `TouchInputService`/`EditorInputService`: nothing is tappable, so
+  `MobileDemo.Gameplay`'s `Unity.InputSystem` reference is correctly present and unused.
+- **No enemy health, `TakeDamage` or `EnemyKilled`** — nothing can damage or reward. See §7 for
+  where that line was drawn on the data asset versus the live object.
+- **No currency on `Economy`** and no `Projectile`, `Tower`, collider, or sprite atlas (§10).
+- **No `StateMachine<T>` helper in Core.** `Enemy` needs four lines (`Exit` → assign → `Enter`);
+  extracting a shared one before §4's machine exists would be designing for a caller that does
+  not yet exist, and the two swap implementations cannot be shown identical until both are here.
+
+**Two judgement calls worth flagging as such**, rather than presenting as obvious: the third
+enemy state (`Spawning`) has a real but thin job today — a ~0.15 s placed-but-not-moving window
+whose eventual owners are a spawn pop and a not-yet-targetable rule; and `Enemy.Initialize()` is
+idempotent purely so EditMode tests can drive it (see §14), which is a test-shaped concession in
+production code and is recorded as one.
 
 ---
 
@@ -537,6 +814,32 @@ there is no PlayMode assembly (§12). The tests assert the pool's *own* call ord
 observable from inside `OnSpawn`/`OnDespawn` and fully deterministic — which is the half §6
 actually depends on.
 
+§13's slice added three fixtures. `EconomyTests` is the clean case this section describes — a
+plain class whose only collaborator is a static bus, so 11 tests run with no scene at all.
+`EnemyFactoryTests` reuses `ObjectPoolTests`' runtime-built-prefab technique. `EnemyTests` drives
+the micro machine and path following through `Enemy.Tick(dt)` with an explicit `dt`, which is the
+concrete payoff of §9's driven-tick decision: `Update` would not be callable from a test at all.
+
+**A second EditMode limit, stated rather than discovered: `Awake` is not sent outside play mode.**
+So a test's `AddComponent<Enemy>()` never initializes. `Enemy.Initialize()` is therefore
+idempotent and called from `Configure` as well as `Awake` — **one guard clause in production
+code, bought for this coverage**, and worth naming as a test-shaped concession rather than
+dressing up as defensive programming. It has a second benefit that would justify it anyway: it
+makes the code indifferent to whether `Object.Instantiate` sends `Awake` at edit time, which is
+version-dependent and not worth depending on either way. Note also that a
+`ScriptableObject.CreateInstance` fixture needs `DestroyImmediate` in teardown for the same reason
+the pool's instances do — an unparented SO otherwise leaks for the whole editor session.
+
+**Not tested, and why:** `Bootstrap` (its job is wiring an asset, a prefab, two scene components
+and a Canvas — a test would have to build all four and would then be testing Unity's
+serialization; its `targetFrameRate`, spawn cadence, release loop and `Awake`/`OnEnable`/`Start`
+ordering are all Play-Mode behaviour, and there is no PlayMode assembly per §12); `HudPresenter`
+(excluded by assembly reference, by design — see the paragraph below, which is now load-bearing
+rather than incidental); and `EnemyPath` (~15 lines of bake and indexing, where a test would need
+reflection or `SerializedObject` to reach a `[SerializeField] Transform[]` — a seam bought for
+trivial code, when avoiding exactly that seam for the code that *matters* is why `Enemy.Configure`
+takes `IReadOnlyList<Vector2>`; its one realistic failure gets a `Debug.LogError` instead).
+
 These live in `Assets/Tests/EditMode` under `MobileDemo.Tests.EditMode`. It references
 `MobileDemo.Core` and `MobileDemo.Gameplay` — deliberately *not* `MobileDemo.UI`, since none of
 the five targets above is a UI class — plus `UnityEngine.TestRunner` / `UnityEditor.TestRunner`
@@ -561,7 +864,7 @@ the included one — it shows the same judgment as §6's "where I did *not* use 
 |---|---|---|
 | **Input System** | Touch handling, sat behind `IInputService` (device vs editor impl) | §10 |
 | **2D Sprite + Sprite Atlas** | The atlas is what *backs* the draw-call budget — not optional flavor | §10 |
-| **TextMeshPro** | Crisp scalable UI text; its absence would look odd | §5 UI |
+| **TextMeshPro** | Crisp scalable UI text; its absence would look odd. Needs a **one-time `Window > TextMeshPro > Import TMP Essential Resources`**, which writes ~2 MB to `Assets/TextMesh Pro/` and must be committed — without it a `TextMeshProUGUI` has no font asset and no shaders, and renders *nothing*, with no error | §5 UI |
 | **Test Framework (UTF)** | Runs the EditMode tests; without it §14 is just a claim | §14 |
 
 *(2D Tilemap only if the map is grid-authored; otherwise it's dead weight.)*
@@ -661,3 +964,23 @@ almost none yet. The two `.editorconfig` rules most likely to bite in Unity —
 `suggestion` for precisely this reason, with the trap written out at the point of the setting.
 Escalating them to `warning` without the analyzer present would be pressuring the reader
 toward the bug.
+
+**§13's slice found two more of exactly that shape, and this time the lint was already
+failing.** The project's first `[SerializeField]` fields made `IDE0044` ("make field readonly")
+and `IDE0032` ("use auto property") fire fifteen-odd times at `warning`, so `Tools/lint.ps1`
+exited non-zero on code that is correct. Both "fixes" are Unity bugs: the serializer cannot write
+to a `readonly` field, and collapsing a serialized field plus its getter into an auto property
+moves the serialized name to the compiler's `<Prop>k__BackingField`, changing both the Inspector
+label and the stored data. Both are now `suggestion`, with the reasoning at the point of the
+setting — the same resolution `.editorconfig` had already reached for `IDE0051`/`IDE0052`, which
+that file's own comment explains as Roslyn being unable to see that "a `[SerializeField]` field is
+assigned by the engine". Where no serialization is involved, the auto-property fix was simply
+taken (`Economy.Lives`, `Enemy.Definition`).
+
+That makes **four** rules now held down for the same reason, which sharpens the trigger stated
+above rather than changing the answer: `Microsoft.Unity.Analyzers` suppresses `IDE0044` on
+serialized fields, and this slice is the first one with enough `MonoBehaviour` code for those
+`UNT####` rules to have anything to say. The dependency is still declined — it means committing a
+DLL under `Assets/` with a `RoslynAnalyzer` label, which answers to the policy at the top of this
+section — but the case for it is now concrete rather than anticipated, and this is where to
+revisit it.

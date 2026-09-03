@@ -87,9 +87,18 @@ dotnet_style_qualification_for_event = false:warning
 # --- Types and modifiers ---------------------------------------------------------------
 dotnet_style_predefined_type_for_locals_parameters_members = true:warning
 dotnet_style_predefined_type_for_member_access = true:warning
-# Omit the modifier where it is already the default, i.e. no `private` keyword on members.
+# Omit the modifier where it is already the default, i.e. no `private` keyword on members —
+# which also means no `internal` on a namespace-level type (EnemyStates.cs's three states).
 dotnet_style_require_accessibility_modifiers = omit_if_default:warning
-dotnet_style_readonly_field = true:warning
+
+# IDE0044 drops to suggestion ON PURPOSE, and must not be escalated back to warning.
+# Every hit in this project so far is a `[SerializeField]` field, and Unity's serializer
+# cannot write to a `readonly` field — so the fix Roslyn offers does not merely change style,
+# it silently stops the Inspector value from ever reaching the field. Same blind spot as the
+# IDE0051/IDE0052 note below, and the same resolution: left visible, unable to fail the lint
+# on code that is in fact correct. Microsoft.Unity.Analyzers suppresses it for serialized
+# fields, which is the fix if that dependency is ever taken; see ARCHITECTURE.md §15.
+dotnet_style_readonly_field = true:suggestion
 csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async:warning
 
 # --- Explicit types over `var` ---------------------------------------------------------
@@ -119,7 +128,11 @@ csharp_style_expression_bodied_local_functions = when_on_single_line:suggestion
 # --- Language preferences --------------------------------------------------------------
 dotnet_style_object_initializer = true:suggestion
 dotnet_style_collection_initializer = true:suggestion
-dotnet_style_prefer_auto_properties = true:warning
+# Also suggestion rather than warning, for the same Unity reason as IDE0044 above: collapsing
+# a `[SerializeField]` field plus its getter into an auto property moves the serialized name to
+# the compiler's `<Prop>k__BackingField`, so the Inspector label and the serialized data both
+# change. Taken wherever no serialization is involved (Economy.Lives, Enemy.Definition).
+dotnet_style_prefer_auto_properties = true:suggestion
 dotnet_style_explicit_tuple_names = true:warning
 dotnet_style_prefer_compound_assignment = true:suggestion
 dotnet_style_prefer_conditional_expression_over_assignment = true:suggestion

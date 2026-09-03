@@ -51,17 +51,21 @@ is the short form:
 
 ## Collaborators
 
-Nothing subscribes yet — the bus landed first, ahead of §13's vertical slice. The
-[§8 catalogue](../ARCHITECTURE.md) is the contract for who will:
+§13's slice wired the first two events end to end. The
+[§8 catalogue](../ARCHITECTURE.md) remains the contract for the rest:
 
-| Event | Raised by | Consumed by |
-|---|---|---|
-| `EnemyKilled` | `Enemy` | `Economy`, `WaveRunner` |
-| `EnemyLeaked` | `Enemy` | `Economy`, `WaveRunner` |
-| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildController` |
-| `LivesChanged` | `Economy` | `HudPresenter`, `GameStateMachine` |
-| `PhaseChanged` | `GameStateMachine` | `HudPresenter`, build UI |
-| `WaveCompleted` | `WaveRunner` | `GameStateMachine` |
+| Event | Raised by | Consumed by | Live? |
+|---|---|---|---|
+| `EnemyLeaked` | [`Enemy`](enemy.md) (`EnemyDyingState.Enter`) | [`Economy`](economy.md); `WaveRunner` planned | **yes** |
+| `LivesChanged` | [`Economy`](economy.md) | [`HudPresenter`](hud-presenter.md); `GameStateMachine` planned | **yes** |
+| `EnemyKilled` | `Enemy` | `Economy`, `WaveRunner` | no publisher — needs towers |
+| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildController` | no publisher — needs spending |
+| `PhaseChanged` | `GameStateMachine` | `HudPresenter`, build UI | no publisher — needs phases |
+| `WaveCompleted` | `WaveRunner` | `GameStateMachine` | no publisher — needs waves |
+
+Two events with two subscribers is also the first live test of the §3 claim: `Enemy` (Gameplay)
+and `HudPresenter` (UI) now communicate across assemblies that cannot reference each other, and
+neither names the other.
 
 Depends on: `System`, `System.Collections.Generic`, and `UnityEngine` for the play-mode reset
 attribute. `GameEvents.cs` additionally uses `UnityEngine.Vector2`. Nothing else — no package, no
@@ -87,10 +91,25 @@ buying nothing.
   The ordering consequence is the pool's to document: `OnEnable` runs *before* `OnSpawn`, so a
   handler wired up in `OnEnable` must not assume `OnSpawn` has reset anything yet.
 - **The bus holds strong references.** A subscriber that never unsubscribes is never collected.
-  Every `Subscribe` needs a matching `Unsubscribe` on the same delegate instance.
-- **Unsubscribe needs the *same* delegate.** `Unsubscribe(e => Foo(e))` after
-  `Subscribe(e => Foo(e))` removes nothing — the two lambdas are different objects. Subscribe a
-  method group (`Subscribe(OnFoo)`) or store the `Action<T>` in a field.
+  Every `Subscribe` needs a matching `Unsubscribe`.
+- **Unsubscribe needs an *equal* delegate — which is not the same as the same instance, and the
+  difference matters.** `Unsubscribe(e => Foo(e))` after `Subscribe(e => Foo(e))` removes nothing,
+  because the two lambdas are distinct objects that are also not equal. But a **method group
+  works**: `Subscribe(OnFoo)` and `Unsubscribe(OnFoo)` create two distinct delegate instances and
+  removal still succeeds, because `Delegate` equality compares *target + method*. So the rule to
+  follow is "subscribe a method group, or store the `Action<T>` in a field" — and the thing to
+  avoid is specifically a **lambda**, not a repeated conversion. [`Economy`](economy.md) depends
+  on this, and `EnemyLeaked_AfterUnsubscribe_ChangesNothing` pins it.
+- **A non-MonoBehaviour subscriber has no `OnEnable`, so the pairing rule keeps its shape and the
+  *caller* moves.** `Economy` is a plain class; it exposes `Subscribe`/`Unsubscribe` and its
+  owning MonoBehaviour (`Bootstrap`) calls them from `OnEnable`/`OnDisable`. Subscribing from the
+  constructor instead would hand the bus a strong reference with no matching teardown — this
+  guide's own leak, one layer down.
+- **Construct in `Awake`, announce in `Start`.** Unity guarantees every `OnEnable` completes
+  before the first `Start`, so a publisher built in `Awake` can safely announce its opening state
+  from `Start` and know that a UI subscriber wired up in `OnEnable` will hear it. Publishing from
+  the constructor instead makes the delivery depend on undefined `Awake` order between two
+  GameObjects — the HUD silently starts blank. See [economy.md](economy.md).
 - **Duplicate subscriptions fire twice.** There is no de-duplication, by decision; a double
   subscription always means a missing unsubscribe upstream. Pinned by a test so removing the
   behaviour has to be deliberate.
@@ -116,5 +135,12 @@ buying nothing.
 12 EditMode tests in
 [EventBusTests.cs](../../Assets/Tests/EditMode/EventBusTests.cs) cover delivery, unsubscribe,
 per-type isolation, `ClearAll`, and the two behaviours §6's reasoning leans on (mid-publish
-unsubscribe, no de-duplication). No production subscriber exists yet — the first arrives with
-§13's vertical slice, when `Enemy` raises `EnemyLeaked` and a `HudPresenter` label listens.
+unsubscribe, no de-duplication).
+
+**It now has production subscribers in code.** §13's slice wrote exactly the chain this guide
+predicted: `Enemy` raises `EnemyLeaked`, `Economy` consumes it and raises `LivesChanged`, and a
+`HudPresenter` label listens. The chain has not been *run* yet — §13's scene wiring is
+outstanding — so `ClearAll()` is still unexercised in anger. It stops being theoretical the
+moment it does run: the project has *Enter Play Mode Options* set to skip domain reload, so a
+missing `ClearAll` surfaces as a `MissingReferenceException` on the **second** Play. Entering play
+mode three times in a row is the cheap check, and it is on §13's verification list.

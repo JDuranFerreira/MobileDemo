@@ -57,15 +57,16 @@ towers are *not* pooled; this is the short form of the implementation choices.
 
 ## Collaborators
 
-Nothing uses it yet — the pool landed second, after the bus and ahead of §13's vertical slice.
-§5 and §13 name who will:
+§13's slice gave it its first real consumers:
 
-| Consumer | Uses | For |
-|---|---|---|
-| `EnemyFactory` | `ObjectPool<Enemy>` | §13 step 2 — gets a pooled enemy and applies an `EnemyDefinition` |
-| `Tower` | `ObjectPool<Projectile>` | Firing at `TOWER_SCAN_INTERVAL_SEC`-driven cadence (§9) |
-| `Enemy` / `Projectile` | implement `IPoolable` | Resetting health, waypoint index, velocity on spawn |
-| Pool Overlay (planned) | `IPoolStats` | Live counts in the editor — the tool is still §12 work |
+| Consumer | Uses | For | State |
+|---|---|---|---|
+| [`EnemyFactory`](enemy-factory.md) | `ObjectPool<Enemy>` | Gets a pooled enemy and applies an `EnemyDefinition`. Constructed by [`Bootstrap`](bootstrap.md) and kept private | **does** |
+| [`Enemy`](enemy.md) | implements `IPoolable` | Resetting `IsFinished` and tearing down its state machine | **does** |
+| `Bootstrap.OnDestroy` | `IPoolStats` | Logs `PeakActive` after a run — §10's number to tune prewarm to | **does** |
+| `Tower` | `ObjectPool<Projectile>` | Firing at `TOWER_SCAN_INTERVAL_SEC`-driven cadence (§9) | planned |
+| `Projectile` | implements `IPoolable` | Resetting velocity on spawn | planned |
+| Pool Overlay | `IPoolStats` | Live counts in the editor — still §12 work | planned |
 
 Depends on `System`, `System.Collections.Generic` and `UnityEngine`. No package, no asset, no base
 class a pooled type must inherit beyond `Component`. `MobileDemo.Core` references nothing, which is
@@ -100,6 +101,18 @@ holding one field today would be an asset for its own sake.
 - **`OnSpawn` is the sole initializer.** Prewarm instantiates, deactivates and pushes without
   calling `OnDespawn`, so nothing may depend on `OnDespawn` having run. Routing prewarm through
   `Release` would fire it 64× at load and turn any death effect into a load-time bug.
+- **But `OnSpawn` cannot initialize from data that arrives *after* `Get()`** — discovered by
+  `Enemy`, and a genuine sharpening of the "`Get` does not place the object" bullet above. The
+  pool's order is `SetActive(true)` → `OnSpawn()` → `Get` returns, so anything the *caller* passes
+  in (an `EnemyDefinition`, a path) does not exist yet: reading it from `OnSpawn` is a
+  `NullReferenceException` on the first spawn and, worse, a **stale value from the previous life**
+  on every spawn after. The working split is `OnSpawn` resets pool-owned state only, and a
+  `Configure` call from the factory starts the object's life. See [enemy.md](enemy.md).
+- **A pooled type builds its per-instance helper objects in `Awake`, not `OnSpawn`.** The
+  corollary of the two bullets above, and the one with a performance cost rather than a
+  correctness one: `OnSpawn` runs once per spawn, so allocating there means a full-pool burst
+  allocates the whole set mid-wave. `Enemy` builds its three state objects in `Awake`, where
+  prewarm pays for all 64 at load. This is why the prefab-root-must-be-active rule matters twice.
 - **`OnEnable` runs *before* `OnSpawn`.** The pool activates first so a coroutine or tween started
   in `OnSpawn` has a live GameObject. The cost: `OnEnable` must not read state that `OnSpawn`
   resets, or it reads the previous life's values. Subscribe in `OnEnable`, reset in `OnSpawn`, in
@@ -136,6 +149,22 @@ and the two ordering guarantees §6's reasoning leans on (`SetActive`→`OnSpawn
 `SetActive`). "Warns *once*" is documented but not tested — Unity's test framework does not track
 unexpected warnings, so there is nothing to assert against.
 
-No production consumer exists yet. The first is §13 step 2, when `EnemyFactory` gets a pooled
-`Enemy` from an `ObjectPool<Enemy>`; `Enemy` is also the first `IPoolable`, and the first place the
-`OnEnable`-before-`OnSpawn` gotcha above will actually bite.
+**It now has a production consumer, and has run.** §13's slice wired `EnemyFactory` to an
+`ObjectPool<Enemy>`, with `Enemy` as the first `IPoolable` and `Bootstrap.OnDestroy` as the first
+reader of `IPoolStats`. `EnemyFactoryTests` covers the seam; the pool's own 30 tests keep sole
+ownership of growth, the rejected double release and the ordering guarantees, so nothing
+re-asserts them.
+
+Measured in play mode over ~40 spawns in 81 s: `InstanceCount` never left its prewarm of 64 and
+`PeakActive` settled at 9, so recycling is observed rather than merely tested, and §2's prewarm
+figure is confirmed as *far* larger than this slice needs. It is deliberately **not** retuned
+down — §10's guidance is to tune to `PeakActive` after a full *wave*, and `WaveRunner` does not
+exist, so 9 is a measurement of `Bootstrap`'s placeholder cadence rather than of the game.
+
+**One prediction this guide made was wrong, and is corrected rather than quietly dropped.** It
+used to close by saying `Enemy` would be "the first place the `OnEnable`-before-`OnSpawn` gotcha
+will actually bite." It isn't: `Enemy` *publishes* `EnemyLeaked` and subscribes to nothing, so it
+has no `OnEnable`/`OnDisable` at all. That gotcha's first real victim is still ahead — a pooled
+`Projectile` that subscribes, or an `Enemy` that one day needs to. What `Enemy` did surface
+instead is the `OnSpawn`-cannot-initialize rule now recorded under Gotchas, which is a different
+and more useful lesson.
