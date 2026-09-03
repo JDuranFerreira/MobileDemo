@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f856e443411e2c84c8ac6166d20fd7a0, type: 3}
+  m_Name: EnemyGreySoldier
+  m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Enemies.EnemyDefinition
+  sprite: {fileID: 9146747757596941775, guid: 9ddbde88dae9e894aa90ff3c4ad7db79, type: 3}
+  maxHealth: 5
+  moveSpeed: 1.1
+  currencyReward: 8
+  damageOnLeak: 2
+  spawnDelaySeconds: 0.15
