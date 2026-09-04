@@ -14,4 +14,4 @@ MonoBehaviour:
   m_EditorClassIdentifier: MobileDemo.Core::MobileDemo.Core.Config.GameConfig
   targetFrameRate: 60
   startingLives: 20
-  enemyPoolPrewarm: 64
+  enemyPoolPrewarm: 30
