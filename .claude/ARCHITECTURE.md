@@ -71,6 +71,16 @@ and survives every level swap, so it must be sized for the *worst* of §1's thre
 the current one. Three levels therefore strengthens this field's place on `GameConfig`. The
 practical consequence for tuning is that `PeakActive` (§10) has to be read after a full run
 across all three, not after map 1.
+
+**The number above and the number in the asset have drifted apart, and the asset is the one that
+runs.** `Data/GameConfig.asset` currently carries `enemyPoolPrewarm: 30`, not the 64 this section
+names; §13's HUD run measured `PeakActive=9, InstanceCount=30, Prewarm=30`, so 30 is holding with
+room to spare and nothing has grown. That does **not** settle which figure is right, because of
+the paragraph directly above: 9 is map 1's peak, and the constant has to cover the worst of three
+maps under a real `WaveRunner`, neither of which exists yet. Recorded as an open divergence rather
+than resolved by editing one to match the other — the honest fix is to retune once a full run
+across all three levels can be measured, and until then the two numbers disagreeing is a fact
+about the project, not a typo.
 - `REFERENCE_RESOLUTION` — configured on the scene's `CanvasScaler`, which is where Unity reads
   it. A copy on the asset would be a second source of truth that nothing consults.
 - `TOWER_SCAN_INTERVAL_SEC` — no towers.
@@ -499,8 +509,8 @@ rotated into landscape on device. It is now portrait-only, deliberately; treat a
 change here as a change to §2.
 
 **Current state:** everything above is set as listed. `Application.targetFrameRate` now has code
-behind it — `Bootstrap.Awake` assigns it from `GameConfig.TargetFrameRate` — though it does not
-actually run until §13's scene wiring is done.
+behind it — `Bootstrap.Awake` assigns it from `GameConfig.TargetFrameRate` — and §13's scene
+wiring is done, so that assignment now actually runs.
 
 **One caveat on that row, worth committing because it is silent.** `Application.targetFrameRate`
 is *ignored* whenever `QualitySettings.vSyncCount != 0`. The project runs quality level 0, where
@@ -641,11 +651,11 @@ Leaf folders appear as their code does. **With code:** `Core/Events`, `Core/Pool
 names in this table:** `Gameplay/Phases`, `Gameplay/Towers`, `Gameplay/Waves`, `Gameplay/Build`,
 `Gameplay/Input`, and `Editor/`.
 
-Of the asset folders, `Art/`, `Scenes/`, `Data/` and `Prefabs/` now hold content: sprites, Unity's
-`SampleScene.unity` still under that name, the three config/definition assets, and
-`EnemySoldier.prefab` + `Level_01.prefab`. **`TextMesh Pro/` is the one that does not exist yet**
-— it is the HUD half of §13, and the `Gameplay.unity` in the tree above is still the target name
-rather than the current one.
+Of the asset folders, `Art/`, `Scenes/`, `Data/`, `Prefabs/` and `TextMesh Pro/` all hold content:
+sprites, the three config/definition assets, and `EnemySoldier.prefab` + `Level_01.prefab`. The
+tree above is now the tree on disk — **`Scenes/Gameplay.unity` is the real name rather than the
+target one**, renamed in place (F2's effect, via `AssetDatabase.RenameAsset`) so the guid survived
+and `EditorBuildSettings.asset` needed only its path rewritten.
 
 **Why the enemy prefab is `EnemySoldier.prefab` and not `Enemy.prefab`.** Prefab identity here is
 per *body shape*, not per "enemy": the green and grey soldiers share a silhouette, so they share a
@@ -654,11 +664,12 @@ and cannot. A file called `Enemy.prefab` would have to mean "the soldier one" th
 lands, so it is named for what it actually is. The consequence is recorded in
 [systems/enemy-factory.md](systems/enemy-factory.md): a second prefab means a second pool, so the
 tank slice changes `EnemyFactory` rather than only adding assets.
-Anything still empty when the demo ships (`Art/UI/` included) should be deleted rather than
-committed as decoration. Note that git does not track empty directories but *does* track their
-`.meta` files, so a fresh clone can get orphan `.meta`s that Unity deletes on first open — worth a
-cleanup pass, and called out here so the next reader knows that diff is expected rather than
-damage.
+Anything still empty when the demo ships should be deleted rather than committed as decoration.
+**`Art/UI/` has now gone**, on exactly that rule: the HUD is TMP text over the map, so no UI sprite
+was ever going to land there, and the folder was holding a place for a decision already made
+elsewhere. Note that git does not track empty directories but *does* track their `.meta` files, so
+a fresh clone can get orphan `.meta`s that Unity deletes on first open — worth a cleanup pass, and
+called out here so the next reader knows that diff is expected rather than damage.
 
 ---
 
@@ -692,7 +703,7 @@ nothing persisted between runs. That is §12's save/meta-progression entry, whic
 
 ---
 
-## 13. First vertical slice — **spine running; HUD authoring pending**
+## 13. First vertical slice — **done; seen end to end**
 
 Every type the slice needs exists, compiles and is tested: `GameConfig`, `IGameState`, `Economy`,
 `EnemyDefinition`, `EnemyPath`, `Enemy` + its three states, `EnemyFactory`, `Level`, `Bootstrap`,
@@ -712,15 +723,23 @@ Every type the slice needs exists, compiles and is tested: `GameConfig`, `IGameS
 4. ✅ Scene wiring: `PoolRoot` (scale exactly 1, at the scene root — **not** a child of the level,
    because pooled enemies must outlive a level swap) and `Bootstrap`'s six references.
 
-What is still outstanding, and why the slice is **not** yet complete:
+The HUD half is now authored too, which is what closes the slice:
 
-5. `Window > TextMeshPro > Import TMP Essential Resources` — without it the HUD label renders
-   nothing, silently (§15).
-6. The HUD Canvas whose Canvas Scaler carries §2's `REFERENCE_RESOLUTION` at match 0.5, with
-   `HudPresenter.livesLabel` assigned. **Until this exists, `EnemyLeaked` → `Economy` →
-   `LivesChanged` fires into nothing visible** — step 4 of the four below is unproven.
-7. Rename `Scenes/SampleScene.unity` → `Scenes/Gameplay.unity` (F2 in the Project window, so the
-   guid survives and `EditorBuildSettings.asset` needs only its path rewritten).
+5. ✅ TMP Essential Resources imported — `Assets/TextMesh Pro/` (~3.9 MB), committed. Without it
+   the HUD label renders nothing, silently (§15).
+6. ✅ The HUD Canvas, whose Canvas Scaler carries §2's `REFERENCE_RESOLUTION` at match 0.5, with
+   `HudPresenter.livesLabel` assigned. `EnemyLeaked` → `Economy` → `LivesChanged` now has
+   somewhere to land, so step 4 of the four below is proven rather than asserted.
+7. ✅ `Scenes/SampleScene.unity` → `Scenes/Gameplay.unity`, renamed in place so the guid survived
+   (`8c9cfa26…` is unchanged) and `EditorBuildSettings.asset` needed only its path rewritten.
+
+**These three were scripted, not clicked**, through a throwaway editor class driven by
+`Unity.exe -executeMethod`. That is worth one line because of what it bought and what it cost: the
+authoring is reproducible and the Canvas Scaler numbers came from §2 rather than from a memory of
+§2, but the script was deleted once it had run, because a one-shot that authors a scene is
+scaffolding and §11's folder table describes what ships. The **`EventSystem` was deliberately not
+authored**: nothing is tappable yet, and one serving nothing is the decoration §1 disowns — it
+arrives with the build phase.
 
 `Level_02` and `Level_03` are deliberately **not** authored yet: one prefab proves the shape, and
 the other two arrive with the swap itself, which waits on §4's machine.
@@ -743,12 +762,41 @@ the other two arrive with the swap itself, which waits on §4's machine.
 
 One caveat worth recording rather than hiding: Unity does not tick while unfocused, so the run
 needed `Application.runInBackground = true`. That is a *harness* fact about driving the editor
-from outside, not a property of the game.
+from outside, not a property of the game — **and it does not stay a harness fact by itself.**
+Assigning it from editor code writes `runInBackground: 1` into `ProjectSettings.asset`, where it
+becomes a shipped **player** setting: a mobile build that keeps simulating in the background,
+which is a battery bug and contradicts the sentence before this one. It has been reverted to `0`,
+and anyone driving the editor from outside again should expect to revert it again.
 
-Mark this section done when the HUD half above has been seen too.
+**And what has now been seen with the HUD attached**, on `Gameplay.unity` at the same
+`spawnIntervalSeconds = 2`, over a 32 s scripted play session:
 
-Then the next slice is **the first tower** (introducing §9's polling and projectile pooling), then
-the build phase (Command), then the wave sequence and phases.
+- **The label counts down: `Lives 14`**, from a starting 20 — six leaks, which is the whole of
+  §8's `EnemyLeaked` → `Economy` → `LivesChanged` → `HudPresenter` chain working end to end. It
+  is also the first time `Economy` has had a subscriber that a human can see.
+- **The label is genuinely rendered, not merely correct in memory.** A screenshot of the Game view
+  shows "Lives 14" drawn top-left over the map, and the component reports
+  `font = LiberationSans SDF`. Both halves matter: §15's TMP failure mode is a label that holds the
+  right string and draws *nothing*, so a `.text` read alone would not have caught it.
+- `Pool 'EnemySoldier': PeakActive=9, InstanceCount=30, Prewarm=30` on exit. `PeakActive` reproduced
+  the earlier run's 9 exactly, `InstanceCount == Prewarm` again says it never grew, and no growth
+  warning was logged. The prewarm figure differs from the run above because the asset was retuned
+  between them — see §2, which records that divergence rather than papering over it.
+- Clean console: no `MissingReferenceException` across repeated sessions, so `EventBus.ClearAll()`
+  is still doing its job with domain reload off.
+- 70 EditMode tests green, run headless via `-runTests`.
+
+**Two things this run cost, recorded because they are the parts a reader cannot infer.** A
+CLI-launched editor restores whatever session scene it likes, so the verifier has to open the
+scene under test explicitly — the first attempt happily played an empty backup scene and reported
+no HUD. And `ScreenCapture` photographs the *Game view*, which such an editor may not have open;
+rendering `Camera.main` into a `RenderTexture` is **not** the workaround, because a Screen Space
+– Overlay canvas does not render through a camera at all and the photograph would miss the one
+thing it exists to show.
+
+With that seen, the slice is closed and the next one is **the first tower** (introducing §9's
+polling and projectile pooling), then the build phase (Command), then the wave sequence and
+phases.
 
 The four steps, kept rather than deleted, because the order is the argument:
 
@@ -864,8 +912,15 @@ the included one — it shows the same judgment as §6's "where I did *not* use 
 |---|---|---|
 | **Input System** | Touch handling, sat behind `IInputService` (device vs editor impl) | §10 |
 | **2D Sprite + Sprite Atlas** | The atlas is what *backs* the draw-call budget — not optional flavor | §10 |
-| **TextMeshPro** | Crisp scalable UI text; its absence would look odd. Needs a **one-time `Window > TextMeshPro > Import TMP Essential Resources`**, which writes ~2 MB to `Assets/TextMesh Pro/` and must be committed — without it a `TextMeshProUGUI` has no font asset and no shaders, and renders *nothing*, with no error | §5 UI |
+| **TextMeshPro** | Crisp scalable UI text; its absence would look odd. Needed a **one-time `Window > TextMeshPro > Import TMP Essential Resources`** — **now done and committed**: 3.9 MB under `Assets/TextMesh Pro/`. Without it a `TextMeshProUGUI` has no font asset and no shaders, and renders *nothing*, with no error | §5 UI |
 | **Test Framework (UTF)** | Runs the EditMode tests; without it §14 is just a claim | §14 |
+
+**TextMeshPro is not a separate package here, and the table above should not be read as saying it
+is.** In Unity 6 TMP ships *inside* `com.unity.ugui` (2.5.0 in `Packages/manifest.json`) — there is
+no `com.unity.textmeshpro` entry to add, and the Essential Resources package that has to be
+imported lives in the editor install under
+`.../BuiltInPackages/com.unity.ugui/Package Resources/`. Worth stating, because the obvious
+"fix" for a missing TMP is to add a package that this project correctly does not list.
 
 *(2D Tilemap only if the map is grid-authored; otherwise it's dead weight.)*
 

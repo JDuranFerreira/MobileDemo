@@ -137,10 +137,18 @@ buying nothing.
 per-type isolation, `ClearAll`, and the two behaviours §6's reasoning leans on (mid-publish
 unsubscribe, no de-duplication).
 
-**It now has production subscribers in code.** §13's slice wrote exactly the chain this guide
-predicted: `Enemy` raises `EnemyLeaked`, `Economy` consumes it and raises `LivesChanged`, and a
-`HudPresenter` label listens. The chain has not been *run* yet — §13's scene wiring is
-outstanding — so `ClearAll()` is still unexercised in anger. It stops being theoretical the
-moment it does run: the project has *Enter Play Mode Options* set to skip domain reload, so a
-missing `ClearAll` surfaces as a `MissingReferenceException` on the **second** Play. Entering play
-mode three times in a row is the cheap check, and it is on §13's verification list.
+**It now has production subscribers, and the chain has been run.** §13's slice wrote exactly the
+chain this guide predicted — `Enemy` raises `EnemyLeaked`, `Economy` consumes it and raises
+`LivesChanged`, and a `HudPresenter` label listens — and that chain has since been watched
+end to end: the label counted down to `Lives 14` from a starting 20 in a 32 s session.
+
+`ClearAll()` is therefore no longer theoretical either. The project has *Enter Play Mode Options*
+set to skip domain reload, so a missing `ClearAll` would surface as a `MissingReferenceException`
+on the **second** Play; repeated play sessions have been clean, which is that guard doing its job
+rather than an absence of evidence.
+
+*(An earlier revision of this section said the chain had not been run and that `ClearAll` was
+"unexercised in anger". That was already stale when it was written — `bootstrap.md` and
+`object-pool.md` both recorded a completed run — and it is corrected here rather than quietly
+deleted, because a guide disagreeing with two others is the failure mode this file format exists
+to avoid.)*

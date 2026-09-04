@@ -161,6 +161,14 @@ figure is confirmed as *far* larger than this slice needs. It is deliberately **
 down — §10's guidance is to tune to `PeakActive` after a full *wave*, and `WaveRunner` does not
 exist, so 9 is a measurement of `Bootstrap`'s placeholder cadence rather than of the game.
 
+A second run, with the HUD attached, reproduced `PeakActive=9` exactly — against a prewarm that
+had meanwhile been retuned in the asset to **30**, giving
+`PeakActive=9, InstanceCount=30, Prewarm=30` and again no growth. Two things follow. The pool's
+recycling is now observed at two different prewarms, which is a stronger claim than one run at
+one size. And the prewarm the asset carries no longer matches the 64 §2 names — that divergence
+is recorded there, unresolved on purpose, because 9 is still map 1's peak under a placeholder
+spawner and §2's figure has to cover the worst of three maps under a real `WaveRunner`.
+
 **One prediction this guide made was wrong, and is corrected rather than quietly dropped.** It
 used to close by saying `Enemy` would be "the first place the `OnEnable`-before-`OnSpawn` gotcha
 will actually bite." It isn't: `Enemy` *publishes* `EnemyLeaked` and subscribes to nothing, so it

@@ -68,7 +68,9 @@ data, not a global constant, and §2's list does not contain it. It is the field
 - **`Awake` composes, `Start` announces.** Unity guarantees every `Awake` and `OnEnable`
   completes before the first `Start`, so publishing the opening lives value from `Start` is what
   makes the HUD deterministic instead of racing two GameObjects' `Awake`. Moving that publish
-  into `Economy`'s constructor silently blanks the label.
+  into `Economy`'s constructor silently blanks the label. **There is now a label on the other end
+  to blank**, so this stopped being a prediction: §13's HUD run watched it count down from the
+  opening value, which is the ordering working.
 - **The path is never read before `Start`.** `EnemyPath` bakes in its own `Awake`, and Unity does
   not order `Awake` between GameObjects. One line of discipline in one file, chosen over a
   lazy-bake guard on `EnemyPath`.
@@ -117,8 +119,9 @@ becoming the god object.
 
 **Implemented, wired, and transitional by design.** It has now run: the `GameConfig` asset, the
 `EnemySoldier` and `Level_01` prefabs and all six serialized references are authored on
-`SampleScene.unity`, and a full run is recorded in §13 — enemies spawning every 2 s, recycling
-through a pool that never grew past its prewarm of 64.
+`Gameplay.unity` (renamed from `SampleScene.unity` when §13 closed), and two full runs are
+recorded in §13 — enemies spawning every 2 s, recycling through a pool that never grew past its
+prewarm, and a HUD label counting down from the value `Start` announces.
 
 `enemyDefinition` is wired to `EnemyGreenSoldier`. `EnemyGreySoldier` is authored but **unspawned**,
 because this field is a single reference rather than a list — deliberately, since `WaveRunner`'s

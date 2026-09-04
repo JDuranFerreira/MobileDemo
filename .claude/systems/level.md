@@ -78,7 +78,7 @@ means the wave slice can add `WaveDefinition[] waves` here without re-plumbing a
 it, and `Prefabs/Level_01.prefab` is now authored: root `Level`, a `Map` child holding the
 `variant1_riverside_switchback` sprite at order 0, and an `EnemyPath` child carrying ten
 waypoints (`Waypoint00`–`Waypoint09`) traced along the road art, with `path` assigned inside the
-prefab. One instance sits in `SampleScene.unity` at the origin, and `PoolRoot` is a sibling at the
+prefab. One instance sits in `Gameplay.unity` at the origin, and `PoolRoot` is a sibling at the
 scene root rather than a child — the gotcha above, honoured. `Level_02` and `Level_03` are
 deliberately not authored yet, because one prefab proves the shape.
 

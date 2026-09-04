@@ -53,6 +53,12 @@ Depends on `MobileDemo.Core.Events`, TextMeshPro and `UnityEngine`. Nothing in
 One serialized field, `livesLabel`, assigned in the scene. No ScriptableObject: there is nothing
 to tune here.
 
+The scene values it sits on, recorded here because this class deliberately does *not* own them
+(see above) and because §2 is where they come from: the `HUD` root carries a Screen Space – Overlay
+`Canvas` and a `CanvasScaler` set to *Scale With Screen Size*, `1080 × 1920`, match `0.5`. The
+label is a `TextMeshProUGUI` child anchored top-left. There is **no `EventSystem`** in the scene
+yet — nothing is tappable, and one serving nothing would be decoration.
+
 ## Gotchas
 
 - **`OnEnable`/`OnDisable`, never `Awake`/`OnDestroy`** — [event-bus.md](event-bus.md)'s pairing
@@ -72,15 +78,21 @@ to tune here.
   text without touching this class.
 - **TMP Essential Resources must be imported**, once, via `Window > TextMeshPro`. Without them
   there is no default font asset and no shaders, so the label renders *nothing* — no error, just
-  blank. The import writes `Assets/TextMesh Pro/` (~2 MB) and it has to be committed, or the HUD
-  is blank on every other clone.
+  blank. The import writes `Assets/TextMesh Pro/` (3.9 MB) and it has to be committed, or the HUD
+  is blank on every other clone. **Done, and committed.** The practical consequence for anyone
+  verifying this class: reading `livesLabel.text` back is *not* proof it works, because this
+  failure mode leaves the text perfectly correct and draws nothing. Check the resolved `font`, or
+  take a screenshot.
 - **An unassigned `livesLabel` disables the component with one error** rather than throwing on
   the first event, matching `Bootstrap`'s stance on its own references.
 
 ## Status
 
-**Code implemented**, lives label only — §13 step 4. **Not yet run:** it needs the TMP Essential
-Resources import and a HUD Canvas with a label assigned, both §13 authoring steps.
+**Implemented, authored and run** — §13 step 4, and the step that closed that slice. A 32 s play
+session showed the label reading **`Lives 14`** from a starting 20, drawn top-left over the map,
+with `font = LiberationSans SDF` resolved. Both halves of that were checked deliberately: the
+string proves the bus chain, the screenshot proves the glyphs, and the gotcha below is why
+neither on its own would have been enough.
 
 **Deliberately untested**, and the omission is now load-bearing rather than incidental: §14's
 test assembly does not reference `MobileDemo.UI`, because none of its five targets is a UI class.
