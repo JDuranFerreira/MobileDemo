@@ -279,6 +279,8 @@ Transform:
   m_Children:
   - {fileID: 6377167034977617901}
   - {fileID: 5423720273674074307}
+  - {fileID: 6296961390508651082}
+  - {fileID: 1564892942761477658}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &8603028350072977018
@@ -294,6 +296,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Levels.Level
   path: {fileID: 3494603530518411798}
+  towers:
+  - {fileID: 906944456303326429}
+  - {fileID: 5639296178617467021}
+  map: {fileID: 1042500288537515743}
 --- !u!1 &2635213426150845842
 GameObject:
   m_ObjectHideFlags: 0
@@ -514,3 +520,173 @@ Transform:
   m_Children: []
   m_Father: {fileID: 5423720273674074307}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1001 &3059186464270053677
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 5970526094749669562}
+    m_Modifications:
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0.15500003
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: -2.88
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7069912556498339779, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_Name
+      value: TowerGreen
+      objectReference: {fileID: 0}
+    - target: {fileID: 7221139503669948832, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: definition
+      value: 
+      objectReference: {fileID: 11400000, guid: 19b261aaf73c6d047b3b6974ba821ced, type: 2}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+--- !u!4 &1564892942761477658 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+  m_PrefabInstance: {fileID: 3059186464270053677}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &5639296178617467021 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 7221139503669948832, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+  m_PrefabInstance: {fileID: 3059186464270053677}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: edde2417595de2841b8563d3ceb224a0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Towers.Tower
+--- !u!1001 &7539229405066921341
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 5970526094749669562}
+    m_Modifications:
+    - target: {fileID: 2142518089289603826, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_Size.x
+      value: 0.46
+      objectReference: {fileID: 0}
+    - target: {fileID: 2142518089289603826, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_Size.y
+      value: 0.59
+      objectReference: {fileID: 0}
+    - target: {fileID: 2142518089289603826, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_Sprite
+      value: 
+      objectReference: {fileID: 6991795282918457499, guid: c27dfb27830a6b94abe96549fd0ae265, type: 3}
+    - target: {fileID: 2142518089289603826, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_WasSpriteAssigned
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0.56000006
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 0.07999998
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7069912556498339779, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: m_Name
+      value: TowerRed
+      objectReference: {fileID: 0}
+    - target: {fileID: 7221139503669948832, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+      propertyPath: definition
+      value: 
+      objectReference: {fileID: 11400000, guid: 517b9ab15dde35a418a5c044da8d1cce, type: 2}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+--- !u!114 &906944456303326429 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 7221139503669948832, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+  m_PrefabInstance: {fileID: 7539229405066921341}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: edde2417595de2841b8563d3ceb224a0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Towers.Tower
+--- !u!4 &6296961390508651082 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 4594784560107992887, guid: a237522d82c951a408a0073aa3e0f3cd, type: 3}
+  m_PrefabInstance: {fileID: 7539229405066921341}
+  m_PrefabAsset: {fileID: 0}

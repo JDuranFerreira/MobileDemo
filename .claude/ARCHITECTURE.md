@@ -53,18 +53,40 @@ STARTING_LIVES            = 20
 TOWER_SCAN_INTERVAL_SEC   = 0.1           (see §9 Polling)
 ENEMY_POOL_PREWARM        = 64
 PROJECTILE_POOL_PREWARM   = 128
+SELL_REFUND_FRACTION      = 0.5           (see §7 — a run rule, not per tower)
+BUILD_ROAD_CLEARANCE      = 0.9           (see §6 PlacementRules)
+BUILD_TOWER_SPACING       = 0.7
 ```
 
 No magic numbers in gameplay code — everything above is read from config assets.
 
-`GameConfig` now exists (§13's slice created it) and carries **three** of the seven:
-`TARGET_FRAME_RATE`, `STARTING_LIVES`, `ENEMY_POOL_PREWARM`. The other four are deliberately not
-on it:
+`GameConfig` now carries **nine** of the ten. §13's slice put three of them there
+(`TARGET_FRAME_RATE`, `STARTING_LIVES`, `ENEMY_POOL_PREWARM`); the tower slice added the three
+that had been waiting on a reader — `STARTING_CURRENCY`, `PROJECTILE_POOL_PREWARM` and
+`TOWER_SCAN_INTERVAL_SEC`; the build slice added the last three with their first readers attached.
+Each arrived the moment something read it, which was the whole point of keeping them off the asset
+until then.
 
-- `STARTING_CURRENCY` — nothing earns or spends yet. A serialized knob nothing reads lies about
-  being tunable. It arrives with `Economy`'s currency half, i.e. the first `ICommand` that spends.
-- `PROJECTILE_POOL_PREWARM` — there is no `Projectile`, so there is nothing to size. The
-  ctor-argument reasoning below still holds verbatim for this one entry.
+**`BUILD_ROAD_CLEARANCE` is the one of the three that is not a new number.** It is the
+`RoadClearance` constant the slice-two authoring script placed the existing towers with — the same
+fact the level was authored against, promoted from a `const` in a throwaway one-shot to a field the
+runtime rule reads. That promotion is what stops deleting the script (§11) from losing the number,
+and it means the placement rule and the authored towers cannot disagree about what "beside the
+road" means.
+
+**And the build slice's own prediction about a knob was wrong in the other direction.** §6's
+Command entry expected the first spender to bring an upgrade cost with it; what it brought was a
+*refund* fraction, because `UpgradeTowerCommand` was deferred (§13.2) and `SellTowerCommand` was
+not. The pattern holds — a serialized knob arrives with its reader — but which knob arrives is
+decided by which command ships, not by which the design named first.
+
+**`STARTING_CURRENCY` arrived one step earlier than this section predicted, and the prediction was
+the part that was wrong.** It said the field would come with "the first `ICommand` that spends".
+Nothing spent at the time — `BuildController` was unwritten — but enemies *earned*: `Economy`
+subscribes `EnemyKilled` and publishes `CurrencyChanged`, and the HUD has a label for it. The test
+this section actually cares about is whether a serialized knob has a reader, and it did. Spending
+was a sufficient trigger mistaken for a necessary one. *(The predicted spender has since arrived
+anyway, in §13.2, so the field now has both kinds of reader.)*
 
 `ENEMY_POOL_PREWARM` is a **run** constant, not a per-level one: the pool is built once at boot
 and survives every level swap, so it must be sized for the *worst* of §1's three maps rather than
@@ -81,9 +103,31 @@ maps under a real `WaveRunner`, neither of which exists yet. Recorded as an open
 than resolved by editing one to match the other — the honest fix is to retune once a full run
 across all three levels can be measured, and until then the two numbers disagreeing is a fact
 about the project, not a typo.
+The one still deliberately absent:
+
 - `REFERENCE_RESOLUTION` — configured on the scene's `CanvasScaler`, which is where Unity reads
   it. A copy on the asset would be a second source of truth that nothing consults.
-- `TOWER_SCAN_INTERVAL_SEC` — no towers.
+
+**`PROJECTILE_POOL_PREWARM` is now measurably wrong, and is recorded rather than corrected.** The
+tower slice's play session logged `PeakActive=1` for *both* projectile pools against a prewarm of
+128 — so 256 GameObjects are prewarmed to hold, at peak, two. The 128 came from this section's
+"a basic tower fires ~10×/sec" (§6); the authored towers fire 2×/s and 0.8×/s, and a projectile's
+whole flight is under a second, so at most one per tower is ever airborne. The reason this is not
+simply edited down is the same one that governs `ENEMY_POOL_PREWARM` two paragraphs up: the
+measurement was taken on one map with two hand-placed towers and no `WaveRunner`, and the constant
+has to cover the worst of §1's three maps with a real wave sequence. Two numbers that disagree with
+a measurement is a fact about the project's current state, not a typo — and this one now has a
+named trigger to settle it: the first full run under `WaveRunner` across all three levels retunes
+both prewarm figures together.
+
+**§13.2 made that oversizing slightly worse, deliberately, and it sharpens the same trigger rather
+than adding a new problem.** `Bootstrap` now prewarms a pool for every projectile prefab in
+`TowerCatalogue` as well as for the level's authored towers, because a tower the *player* places
+whose projectile was never collected gets `null` from `ProjectileFactory.Create` and silently never
+fires. So the number of 128-deep pools is now driven by what is *buildable*, not by what is on the
+map — pools for tower types a given run may never build. Today that adds none, because both
+buildable types are already placed on `Level_01`; the rule is what closes the hole, not the current
+assets happening to overlap.
 
 **`ENEMY_POOL_PREWARM` moving onto the asset did not change `ObjectPool<T>`.** `prewarm` is still
 a **constructor argument**: `GameConfig` supplies the number to `Bootstrap`, which passes it to
@@ -121,6 +165,23 @@ The rule is now visible rather than asserted: the project's first UI file, `HudP
 names only `MobileDemo.Core.Events`, `TMPro` and `UnityEngine`. And it is why the composition
 root (`Bootstrap`, §5) sits *inside* Gameplay rather than in a fifth assembly above UI — it never
 needs to name a UI type, because `HudPresenter` subscribes itself.
+
+**§13.2 pushed hardest on this rule and it held, in the direction that is easy to get wrong.**
+`BuildMenu` is a UI file that has to *cause* something in Gameplay — a tower selected, an undo —
+which is the first time traffic has needed to go that way. It goes over the bus
+(`BuildActionRequested`, §8), so `MobileDemo.Gameplay` still names no UI type. The alternative was
+a `Button.onClick` persistent call wired in the Inspector to a Gameplay component: no compile-time
+reference, so it would satisfy the letter of the rule while gutting the sentence above it — the
+boundary would be a name resolved at runtime that neither the compiler nor a test can check.
+
+`MobileDemo.Gameplay` did gain `UnityEngine.UI`, for `EventSystem.IsPointerOverGameObject` (§10) —
+and **that is a documentation change, not an enabling one.** `UnityEngine.UI` ships
+`autoReferenced: true`, so every assembly in the project could already see it; listing it makes an
+actual dependency visible, matches what `MobileDemo.UI` already does with the same assembly, and
+survives anyone setting `overrideReferences`. It is also not a breach of the rule above: that rule
+is about `MobileDemo.UI`, this project's UI layer, where `UnityEngine.EventSystems` is Unity's
+input plumbing. The alternative — deciding which taps to ignore from screen geometry — would have
+required Gameplay to know HUD layout, which *would* have breached it.
 
 Assemblies are named `MobileDemo.<Layer>`, not bare `Core` / `Gameplay` / `UI`. A bare
 `UI.asmdef` produces an assembly called literally `UI` — generic enough to collide with a
@@ -202,21 +263,36 @@ cannot infer:
 | `WaveRunner` | Reads a `WaveDefinition`, schedules spawns over time | **Factory**, ScriptableObject |
 | `EnemyFactory` | Turns an `EnemyDefinition` into a live, pooled enemy | **Factory + Object Pool** |
 | `Enemy` | Path following, health, death | **State**, Observer (emits) |
+| `EnemyRegistry` | Who is alive right now: ticks them, releases the finished, answers range queries | **none** — a plain list with three readers (§6) |
 | `Tower` | Target acquisition, firing | **Polling** (§9), Factory (spawns projectiles) |
+| `TowerFactory` | Turns a `TowerDefinition` into a live tower, and wires an authored one | **Factory** — the first here *without* a pool (§6) |
+| `TowerCatalogue` | Which tower types are buildable, and their projectile prefabs | ScriptableObject (§7) |
+| `Projectile` | Flight, impact, splash | **Object Pool**; data on the prefab (§7) |
+| `ProjectileFactory` | Turns a projectile prefab into a live, pooled projectile — one pool per prefab | **Factory + Object Pool** |
 | `Economy` | Currency & lives | **Observer** (emits changes) |
-| `BuildController` | Place/upgrade/sell via undoable actions | **Command** |
-| `InputService` | Touch → world intent | Strategy-ish (one interface, editor vs device) |
+| `BuildController` | Place/sell via undoable actions, on a LIFO stack | **Command** |
+| `PlacementRules` | Where a tower may stand, and which tower a tap hit | **none** — a plain class, two queries (§6) |
+| `PointerInputService` | Touch or mouse → world intent | one interface, **one** implementation — see §10 |
 | `HudPresenter` | Listens, renders numbers | **Observer** (subscribes) |
+| `BuildMenu` | Which tower to build, and undo | **Observer** — subscribes `CurrencyChanged`, publishes intents |
 | `Level` | Owns one map's path — and later its wave sequence. The unit that gets swapped | **none** — a prefab-root component, not an asset (see §7) |
 | `LevelRunner` | Swaps in the next level's prefab on victory | planned — waits on `GameStateMachine` (§4) |
 | `Bootstrap` | Composition root: builds pool, factory and economy from `GameConfig`, sets the frame rate, drives the tick | **none** — deliberately not a Service Locator or DI container (§15 declines both) |
 
-**This table is a design, not an inventory.** What has code today: `EventBus`, `ObjectPool<T>`,
-`EnemyFactory`, `Enemy`, `Level`, `Bootstrap`, `HudPresenter`, and `Economy` — the last of which
-is **lives only** until something can spend (§8's `CurrencyChanged` therefore has no publisher
-yet, which is fine: §8 is a contract). Still names only: `GameStateMachine`, `WaveRunner`,
-`LevelRunner`, `Tower`, `BuildController`, `InputService`. `Bootstrap` is last in the table
-because it is the only row that is *meant* to shrink — see §13.
+**This table is a design, not an inventory.** What has code today: everything except
+`GameStateMachine`, `WaveRunner` and `LevelRunner` — the build slice took `BuildController`,
+`PlacementRules`, `TowerFactory`, `TowerCatalogue`, `PointerInputService` and `BuildMenu` off the
+names-only list, and `Economy` has had **both halves**, lives and currency, since the tower slice.
+Every event in §8 now has a publisher except `PhaseChanged` and `WaveCompleted`, which wait on the
+two systems that raise them.
+
+`Bootstrap` is last in the table because it is the only row that is *meant* to shrink — and
+**§13.2 grew it instead**, which is worth saying rather than leaving to be noticed. It gained three
+serialized references and one more tick call, while its successor table lost nothing: the build
+phase's jobs went to `BuildController`, but the tick order, the spawn timer and the level reference
+are all still here. [systems/bootstrap.md](systems/bootstrap.md) opens by saying that if that guide
+grows again without its Status table shrinking, the class needs splitting. It has. The phases slice
+is the one that has to take the tick order out.
 
 `EventBus` and `ObjectPool<T>` head the table because they are Core infrastructure the rest lean
 on, not gameplay systems in their own right — everything below them is a
@@ -233,6 +309,8 @@ This is the table a reviewer should read first. The right-hand column is the sen
 ### Object Pool — `Core/Pooling/ObjectPool<T>`
 - **Where:** enemies and projectiles. Enemies spawn in dozens per wave; a basic tower
   fires ~10×/sec. `Instantiate`/`Destroy` at that rate is the classic mobile GC-spike source.
+  *(The ~10×/sec figure is an assumption, not a measurement, and the authored towers fire 2×/s and
+  0.8×/s — which is why §2 now records `PROJECTILE_POOL_PREWARM` as measurably oversized.)*
 - **Why it's justified:** it directly serves the mobile constraint. Prewarmed at construction from
   the §2 figures (`ENEMY_POOL_PREWARM`, `PROJECTILE_POOL_PREWARM`), passed as a constructor
   argument rather than read from an asset — see §2 for why that is not yet `GameConfig`'s job.
@@ -267,13 +345,86 @@ This is the table a reviewer should read first. The right-hand column is the sen
   instances destroyed behind the pool's back. Each has a named trigger in
   [systems/object-pool.md](systems/object-pool.md) rather than speculative code here.
 
-### Factory — `EnemyFactory`, projectile creation on `Tower`
+### Factory — `EnemyFactory`, `ProjectileFactory`, `TowerFactory`
 - **Where:** `WaveRunner` asks `EnemyFactory` for "an enemy of this definition." The factory
   pulls from the pool, applies the `EnemyDefinition` data, and returns a configured instance.
+  `Tower` asks `ProjectileFactory` the same question about a projectile prefab.
 - **Why it's justified:** it's the seam between *data* (which enemy) and *instance* (a live
   pooled object), and it's the one place that knows how to wire the two together.
-- **Where I did *not* abstract:** no `AbstractFactory` hierarchy. One concrete factory is
-  enough for two enemy types; an interface here would be architecture cosplay.
+- **Where I did *not* abstract:** no `AbstractFactory` hierarchy, and no shared `IFactory<T>`
+  interface over the two. One concrete factory each is enough; an interface here would be
+  architecture cosplay, and the two do not have the same shape anyway — see the next bullet.
+- **`ProjectileFactory` holds a pool per prefab, where `EnemyFactory` holds one.** That is the
+  same lesson [systems/enemy-factory.md](systems/enemy-factory.md) already records — a pool hands
+  back instances of the prefab it was built from, so a second prefab means a second pool — except
+  that projectiles hit it immediately: their speed, damage and impact radius live on the prefab
+  (§7), so two projectile types *cannot* share one. The prefabs are handed to the constructor and
+  prewarmed up front rather than created lazily, because a pool built on the first shot would
+  allocate its whole prewarm mid-wave, which is the exact spike §2 calls pooling mandatory to
+  prevent. It is also the first real reader of `IPoolStats` as a collection — the use case that
+  interface's own comment says it exists for.
+- **`TowerFactory` is the first Factory here that is *not* also an Object Pool, and that is what
+  shows the two patterns were separable rather than one habit.** Until §13.2 both factories wrapped
+  a pool, so a reader could fairly conclude that "factory" in this project meant "pool with a
+  configure step". Towers are explicitly not pooled (the bullet above), so `Create` genuinely
+  `Instantiate`s and a sale genuinely destroys. What is left when the pool is removed is exactly
+  the seam this section claims Factory is: data (`TowerDefinition`) on one side, a configured live
+  instance on the other.
+  - *Why it exists at all, given it owns no pool:* without it `PlaceTowerCommand` takes eight
+    constructor arguments, four of them collaborators it has no opinion about (`EnemyRegistry`,
+    `ProjectileFactory`, the tower prefab, the scan interval). It also gives the *authored* towers
+    and the *placed* ones one wiring path instead of two — `Bootstrap.ConfigureTowers` now
+    delegates to it, so `TOWER_SCAN_INTERVAL_SEC` is named in one place.
+  - *What it deliberately does not own:* the live tower list. That is `Level`'s, because a
+    runtime-placed tower is the level's child and must **not** outlive a level swap — the exact
+    opposite of the pooled enemies that must, which is why `PoolRoot` is a scene-root sibling. A
+    `TowerRegistry` owned by `Bootstrap` would survive the swap holding dangling references and
+    need a `Clear` to compensate; `Level` answers the lifetime question by construction. *Named
+    trigger for a `TowerRegistry`: a third owner of the live set that is not the level.*
+
+### `EnemyRegistry` — where a pattern was *not* reached for
+Three callers now need "which enemies are alive right now": `Bootstrap` to tick and release them,
+`Tower` to find a target in range, and `Projectile` to splash at impact. `ObjectPool<T>`
+deliberately does not expose its active set, so something else has to own the list.
+
+The tempting answers were a singleton service, an `IEnemyProvider` interface, or a `TargetingSystem`.
+What it actually is: a plain class holding a `List<Enemy>`, constructed by `Bootstrap` and passed
+to whoever needs it. No pattern, because none of them buys anything here — there is one
+implementation, one owner, and no lifetime question.
+
+- **Why a type at all, rather than passing the list around.** `Tower` could take an
+  `IReadOnlyList<Enemy>` per tick, but `Projectile` needs the same list *mid-flight* at impact, so
+  it would have to hold the reference regardless. Three callers is not speculative.
+- **What it cost.** It slightly pre-empts `WaveRunner`, which
+  [systems/bootstrap.md](systems/bootstrap.md) says inherits "the same ten lines". Keeping it a
+  plain class rather than a service is what lets `WaveRunner` own it outright later instead of
+  reimplementing it.
+- **Why projectiles get no equivalent.** Nothing ever asks which projectiles are in flight, so a
+  `ProjectileRegistry` would exist to hold one tick-and-release loop over instances
+  `ProjectileFactory` already maps to their pools. That loop lives on the factory instead. The
+  asymmetry is the reasoning, not an oversight.
+
+### `PlacementRules` — the same non-decision, made a second time
+Where a tower may stand is three predicates: inside the map's bounds, clear of every path segment
+by `BUILD_ROAD_CLEARANCE`, and clear of every live tower by `BUILD_TOWER_SPACING`. The tempting
+answers were a `IPlacementValidator` with a rule-per-class hierarchy, or build plots as a subsystem
+on `Level`. What it is: a plain class with two methods, constructed by `Bootstrap` and handed to
+`BuildController`.
+
+Two things worth recording, because they are the parts that are not obvious:
+
+- **It takes baked data, not a `Level`** — `IReadOnlyList<Vector2>`, a `Bounds` and two floats. That
+  is §14's own principle reused ("avoiding exactly that seam for the code that *matters* is why
+  `Enemy.Configure` takes `IReadOnlyList<Vector2>`"), and it is why the geometry tests with literal
+  coordinates and no scene. It also means `LevelRunner` can build a fresh one per level.
+- **One radius serves both questions.** The distance that blocks a placement is the distance that
+  selects a tower for sale, so the two branches of a tap can never both be true — and there is one
+  number to tune rather than two that can disagree.
+
+**A plain class is becoming this project's default answer**, which is worth noticing out loud:
+`EnemyRegistry`, `PlacementRules` and `Economy` are all pattern-free, and the patterns that *are*
+here (§4's State, the pools, the factories, Command) each earned their place against a named
+alternative. That ratio is the honest signal, not the pattern count.
 
 ### Observer — `Core/Events/EventBus`
 - **Where:** discrete, one-to-many facts: `EnemyKilled`, `EnemyLeaked`, `CurrencyChanged`,
@@ -283,6 +434,22 @@ This is the table a reviewer should read first. The right-hand column is the sen
 - **Where I did *not* use it:** tower→target and enemy→path following are *continuous*
   relationships, not discrete events, so they are plain references, not subscriptions.
   Firing an event every frame per enemy would be Observer used as a hammer.
+- **And a second place, decided in §13.2: `BuildController` subscribes to nothing.** §8 used to
+  list it as a `CurrencyChanged` consumer for its afford check. It should not: it holds the
+  `Economy` by construction — it must, to build commands that spend — and `Currency` is a public
+  getter, so the check is a comparison at the call site. Subscribing in order to *mirror* a number
+  it can already read would be Observer where a plain reference is correct, and a second source of
+  truth for the balance. The afford check that genuinely is Observer's is the UI's: greying out an
+  unaffordable button is a presentation decision about a number `BuildMenu` already receives.
+  Deleting a planned row's consumer rather than adding one is the direction this section wants.
+- **The build UI is the one case where the bus carries an imperative**, which is the honest cost
+  of §3. `BuildActionRequested` is a request, not a past-tense fact, and §3 leaves exactly one
+  legal route from UI to Gameplay. What the bus carries is not the command — `BuildController`
+  still constructs and owns those — but the player's *request*, which is a fact about the player.
+  It is one event with an enum rather than two, because §4 already names a third UI intent
+  (`Build → Wave : StartWave (player taps "Go")`) that will take the same route, so the enum is
+  the shape that absorbs it — exactly as `PhaseChanged` carries a `GamePhase` instead of splitting
+  into four events.
 - **Design choice — why a small static `EventBus` and not ScriptableObject event channels:**
   SO event channels are the trendy Unity answer and I know them, but they add an asset and an
   editor-wiring step per event for a demo where every subscriber is code. The static typed bus
@@ -327,22 +494,62 @@ This is the table a reviewer should read first. The right-hand column is the sen
   `EventBus<(int total)>`, would silently put `CurrencyChanged` and `LivesChanged` on the *same*
   bus. Distinct named types are what prevent that.
 
-### Command — `Gameplay/Build/ICommand` + `BuildController`
-- **Where:** build-phase actions only — `PlaceTowerCommand`, `UpgradeTowerCommand`,
-  `SellTowerCommand`. `BuildController` pushes each onto an undo stack.
+### Command — `Core/Interfaces/ICommand` + `Gameplay/Build/BuildController`
+- **Where:** build-phase actions only — `PlaceTowerCommand` and `SellTowerCommand`.
+  `BuildController` pushes each onto an undo stack. `UpgradeTowerCommand` is named in the design
+  and deferred; §13.2 says why, and it is a different reason than §7 predicted.
 - **Why it's justified:** Command is the pattern that feels *forced* in a pure action game.
-  A build phase gives it an honest home: undo/redo for free, and a clean, testable input layer
-  (a command can be executed from a test with no touch input at all).
+  A build phase gives it an honest home: a real undo stack the player can press, and a clean,
+  testable input layer (a command can be executed from a test with no touch input at all).
+- **Redo was in that sentence and has been cut.** The bullet used to promise "undo/redo for free",
+  which contradicted the paragraph four bullets down: a command is defined here as "an imperative
+  with exactly one execution", and redo re-executes an instance that has already executed and been
+  undone. It also has no affordance — nobody re-does a tower placement, they place again, which is
+  one tap and already works. So the second stack, the clear-on-next-execute rule, and the
+  twice-executed command state are all absent, and their absence is this decision rather than an
+  omission.
 - **Where I stopped:** undo does **not** cover combat (you can't un-kill an enemy). Undo is
   scoped to the build phase, where it models a real player affordance ("misclicked, take it back")
   instead of inventing complexity to show off.
+- **The stack is unbounded, and strictly LIFO.** No `MAX_UNDO_DEPTH`, because the ceiling is the
+  number of build actions in a round — a handful — so the constant would be §2's eleventh entry and
+  the first with no failure mode to prevent. And no `Undo(int)`: arbitrary-index undo is where a
+  demo starts inventing a transaction system, and it would break the invariant below.
+- **What makes `void Undo()` sound rather than optimistic — the sharpest thing this slice found.**
+  Undoing a sell has to charge its refund back, and that refund can have been spent in the
+  meantime, which reads like a case for `bool Undo()` or a `CanUndo` member. It is not, and the
+  reason is the stack discipline rather than the arithmetic: every debit comes from a command, and
+  a spend made *after* a sell sits **above** it on the stack, so it is undone and refunded first.
+  Formally — after a sell the balance is `C + r`; a later place requires `C + r >= cost` and its
+  undo restores exactly `cost`, so on returning to the sell the balance is at least `r`; earnings
+  only add. `Undo_AfterPlacingOnTopOfASell_UnwindsBothAndRestoresTheOpeningBalance` pins it.
+  **Named trigger for `bool Undo()`: the first spender that is not a `BuildController` command** —
+  a call-the-wave-early cost, a repair charge — because that is the one thing that can consume a
+  refund without being on the stack.
+- **A sold tower is deactivated, never destroyed, and that is load-bearing.** With
+  destroy-and-recreate, the stack `[Place, Sell]` breaks: undoing the sell yields a *new* instance,
+  so undoing the place beneath it then destroys a reference that is already gone — leaving the new
+  tower on the board **and** refunding its cost, repeatably. Undo has to restore state, not
+  manufacture a replacement. The honest cost is that a sold tower's GameObject persists, inactive,
+  owned by the undo stack, for the rest of the round; nothing clears that stack yet (§13.2).
+  *Named trigger for the `Destroy`: `BuildState.Exit()`, which is where clearing the stack belongs.*
+- **Validation lives in the invoker, the action in the command.** `BuildController` checks
+  legality and affordability *before* constructing anything, so every `Execute` is a few lines that
+  cannot fail — which is what makes "no half-executed command reaches the stack" true rather than
+  hoped for. `PlaceTowerCommand.Execute` still calls `TrySpend` and logs an error if it is refused:
+  a broken invariant says so out loud instead of quietly placing a free tower, which is
+  `ProjectileFactory.Create`'s stance on an unknown prefab.
 - **How it meets the bus — the one place the two patterns can disagree.** A command is not an
   event: it is an imperative with exactly one execution and a receiver the caller holds, where an
   event is a past-tense fact broadcast to nobody in particular. But commands *produce* events.
   `PlaceTowerCommand.Execute()` spends currency, so `Economy` raises `CurrencyChanged`; `Undo()`
-  must therefore refund **and let that raise again**, or `HudPresenter` and `BuildController`'s
-  afford check (§8) keep showing the pre-undo balance while `Economy` holds the real one. Undo
-  restores state *and* re-announces it.
+  must therefore refund **and let that raise again**, or `HudPresenter` keeps showing the pre-undo
+  balance while `Economy` holds the real one. Undo restores state *and* re-announces it — which is
+  now code (`Economy.Refund` publishes) and pinned by
+  `SpendThenRefund_PublishesCurrencyChangedBothTimes`, which asserts the *sequence* rather than the
+  final total, because the whole point of the rule is that the second publish happens.
+  *(This bullet used to name `BuildController`'s afford check as a second victim. It is not one —
+  see the Observer entry below, and §8.)*
 
 ```csharp
 public interface ICommand
@@ -363,21 +570,77 @@ public interface ICommand
 All tuning lives in assets, not code. This is both good Unity practice and the reason the
 demo has *no magic numbers* in gameplay classes.
 
-- `GameConfig` — the constants from §2 (currency, lives, frame rate, pool sizes).
+- `GameConfig` — the constants from §2 (currency, lives, frame rate, pool sizes, build rules).
 - `EnemyDefinition` — sprite, hp, move speed, currency reward, damage-on-leak.
 - `TowerDefinition` — sprite, cost, range, fire rate, projectile ref, upgrade tiers.
+- `TowerCatalogue` — which `TowerDefinition`s the player may build. See below: it exists for a
+  *pooling* reason before a UI one.
 - `WaveDefinition` — an ordered list of `{ EnemyDefinition, count, spawnInterval }` groups.
 
 Designers (or you, at 2am) can retune the whole game by editing assets in the Inspector —
 no recompile. `EnemyFactory` and `WaveRunner` read these; they never hard-code values.
 
-**Today:** `GameConfig` carries three of §2's seven constants (that list says which, and why the
-rest are absent). `EnemyDefinition` carries all five fields above plus `spawnDelaySeconds`, the
-placed-but-not-moving window `EnemySpawningState` owns. `TowerDefinition` and `WaveDefinition`
-have no code. Two `EnemyDefinition` fields — `maxHealth` and `currencyReward` — are **authored but
-unread** until towers exist: a deliberate call, so the asset is authored once and completely. The
-line that is *not* crossed is `Enemy.currentHealth`, because a data knob a future system will read
-is a knob, while a field on a live object with no writer reads as working code.
+**Today:** `GameConfig` carries six of §2's seven constants (that list says which, and why the
+last is absent). `EnemyDefinition` carries all five fields above plus `spawnDelaySeconds`, the
+placed-but-not-moving window `EnemySpawningState` owns — and `maxHealth` and `currencyReward`,
+authored-but-unread through §13's slice, now both have readers: `Enemy.Configure` seeds health
+from one and `EnemyDyingState` pays out the other. `Enemy.currentHealth` therefore exists now,
+which is the line §13 deliberately did not cross while nothing could damage anything.
+
+`TowerDefinition` carries `sprite`, `range`, `shotsPerSecond`, `projectilePrefab` and `cost`, and
+**as of §13.2 none of them is authored-but-unread**: `BuildController` gates on `cost` for the
+afford check and `SellTowerCommand` takes a fraction of it. That vindicates the deliberate call
+`EnemyDefinition` made for the same reason — author the asset once and completely — twice over now.
+`WaveDefinition` still has no code.
+
+**`upgradeTiers` from the bullet list above was still not authored, and the reason changed.** The
+original reason was that a `cost` is one number a future command reads where a tier list is a data
+structure whose shape the upgrade feature would decide — so authoring it early would be guessing.
+That reasoning is now *spent*: the feature arrived, and could have chosen. A single
+`TowerDefinition nextTier` reference would have been the cheap answer, costing one field and one
+asset, in the same unit as the green/grey soldiers below.
+
+It was declined again anyway, for a reason the first deferral could not have known: **with one
+gesture and no per-tower UI, upgrade and sell are two verbs competing for the same tap.** A tap on
+a placed tower can mean one thing, and selling is the one that undo makes safe. Disambiguating them
+needs a selection UI, so the trigger for `UpgradeTowerCommand` is **a per-tower UI**, not a data
+shape. Recorded as a strengthening rather than a replacement: the shape question is answered
+(`nextTier`, one asset per tier), and only the input question is open.
+
+### Why `SELL_REFUND_FRACTION` is on `GameConfig` and not on `TowerDefinition`
+
+Same shape of question as `STARTING_LIVES` below, and it is worth the two lines because the wrong
+guess is again a plausible "fix". A refund fraction reads like a property of a tower — a salvage
+value — and it is not: it is a rule of the game's economy, applying identically to every type, the
+same category as `STARTING_CURRENCY`. Had it been per-type, the field would sit on
+`TowerDefinition` and `SellTowerCommand` would read it from the tower rather than be handed it.
+
+The clamp is the other half. `SellRefundFraction` is the only `GameConfig` getter that clamps its
+field (`Mathf.Clamp01`), because a fraction above 1 is not merely mistuned — it is a money printer,
+and one an authoring slip produces easily. object-pool.md's stance applies: a bad tuning number
+should be recoverable where a missing dependency is not. The floor in the command is the same
+instinct at the arithmetic level — `floor(75 × 0.5) = 37`, where rounding would give 38 and let an
+odd-cost sell-and-rebuy loop mint a coin each time.
+
+### Why `TowerCatalogue` is an asset, and why it is not on `GameConfig` or `Level`
+
+It looks like a convenience for the build menu, and that is the smaller half of why it exists. The
+larger half is pooling: `ProjectileFactory` takes every projectile prefab up front by explicit
+decision (§6) and `Create` on a prefab it was never told about logs an error and returns `null`. So
+a tower the player can *build* whose projectile was not collected at boot fires nothing, silently —
+and something has to enumerate the buildable definitions before that factory is constructed.
+**This asset would therefore have to exist even if the buildable type were hardcoded**, which is
+what makes adopting it now not anticipation.
+
+Two homes it could not have:
+
+- **`GameConfig` — ruled out by the compiler, not by taste.** `GameConfig` is `MobileDemo.Core`,
+  which references nothing project-specific, and `TowerDefinition` is `MobileDemo.Gameplay.Towers`.
+  A field of that type there does not compile. Worth stating, because it is the first place a
+  reader will look for it, and it is §3's dependency direction paying off in the small.
+- **`Level` — the plausible wrong guess.** The buildable set is a *run* constant (§1: two tower
+  types for the whole game), the same category as `STARTING_LIVES`, so putting it per-level is that
+  section's warning inverted.
 
 Both types carry `[CreateAssetMenu]`, and `Data/GameConfig.asset`, `Data/EnemyGreenSoldier.asset`
 and `Data/EnemyGreySoldier.asset` are now authored. The two soldiers differ **only** as data —
@@ -392,6 +655,28 @@ a *run* constant — the same category as `TARGET_FRAME_RATE`. Had lives reset p
 would belong on `Level` and `Economy` would be rebuilt on every swap. Recorded here because the
 reasoning is the only thing that distinguishes the two cases, and the wrong guess is a plausible
 "fix".
+
+### Why projectile tuning lives on the prefab, not a `ProjectileDefinition` asset
+
+A projectile's `speed`, `damage` and `impactRadius` are `[SerializeField]`s on `Projectile`,
+authored per prefab. By this section's own rule that tuning belongs in assets, a
+`ProjectileDefinition` ScriptableObject is the expected answer — and it was declined for the same
+reason the level's is, one section down: **a prefab is already an asset**, and the projectile's
+defining content is a sprite on a GameObject, so the prefab has to exist whether or not a
+definition also describes it. Adding one would mean two artifacts per projectile type to keep in
+sync, plus the failure mode of a definition pointing at the wrong prefab.
+
+The consequence is real and shows up in §6: because the data is on the prefab, two projectile
+types cannot share a pool, so `ProjectileFactory` keys its pools by prefab. Had the data been on
+an asset, one pool could have served every projectile and the factory would be a few lines
+shorter. That is the honest cost of this choice, and it is worth it: `TowerDefinition` referencing
+a prefab is one link, where referencing a definition that references a prefab is two.
+
+**Where this rule stops.** `TowerDefinition` *is* a ScriptableObject, and both tower types share
+one `Tower.prefab` — exactly as the green and grey soldiers share `EnemySoldier.prefab`. The
+dividing line is whether the thing being varied is *on* the GameObject: a tower's range and fire
+rate are pure numbers a component reads, so they belong in an asset, and one prefab plus two
+assets is the cheaper pair.
 
 ### Why per-level data lives on a prefab component, not a `LevelDefinition` asset
 
@@ -416,10 +701,37 @@ ground and some of these should go back to direct references.
 |---|---|---|---|
 | `EnemyKilled` | `Enemy` | `Economy`, `WaveRunner` | reward, position |
 | `EnemyLeaked` | `Enemy` | `Economy` (lives), `WaveRunner` | damage |
-| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildController` (afford check) | new total |
+| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildMenu` (afford check) | new total |
 | `LivesChanged` | `Economy` | `HudPresenter`, `GameStateMachine` (defeat check) | new total |
 | `PhaseChanged` | `GameStateMachine` | `HudPresenter`, build UI | new phase enum |
 | `WaveCompleted` | `WaveRunner` | `GameStateMachine` | wave index |
+| `BuildActionRequested` | `BuildMenu` | `BuildController` | action enum, tower |
+
+Seven of the ~10 this section budgets for. **The slice most likely to have breached that budget
+added one**, and the two rows it might have added — a `TowerPlaced` and a `TowerSold` — were
+declined for the reason the Observer entry in §6 gives: each would have a publisher and no
+subscriber, since the level learns by direct call and the HUD already sees the money move through
+`CurrencyChanged`.
+
+**One row moved rather than being added, and that is the more interesting change.**
+`CurrencyChanged`'s second consumer was `BuildController (afford check)` and is now `BuildMenu`.
+`BuildController` holds the `Economy` and can ask it synchronously, so subscribing would have been
+Observer used to mirror a readable number; greying out a button, by contrast, genuinely is a
+presentation reaction to a published fact. The check did not disappear — it moved to the layer §3
+puts it in.
+
+**`BuildActionRequested` is the one event not declared in `Core/Events/GameEvents.cs`, and it
+cannot be.** Its payload names `TowerDefinition`, a `MobileDemo.Gameplay` type, and `MobileDemo.Core`
+references nothing project-specific — so the struct lives in `Gameplay/Build/BuildEvents.cs`
+instead. A payload's type decides which assembly its event can live in, and `EventBus<TEvent>`
+being a Core generic closed over a Gameplay type is the mechanism working as designed rather than
+a workaround. The alternative was an `int` index into the catalogue, which would have kept the
+declaration in one file at the cost of reintroducing a runtime failure mode — a wrong index — that
+this bus exists to make impossible at compile time.
+
+It is also the only row whose payload has a field that is meaningful for just one of its enum
+values (`Tower`, for `SelectTower`). Said out loud rather than hidden: *the trigger to split this
+into separate events is the third action needing a payload of its own.*
 
 ---
 
@@ -434,6 +746,30 @@ Two continuous jobs deliberately use **polling on a tick**, not events:
     tower on every move — a many-to-many event storm that's strictly worse than a cheap poll.
   This is the honest case where **polling is the right answer** and events would be the naive one.
 - **Enemy path following** advances along waypoints in its own `Tick`. No event per step.
+- **Input.** `BuildController.Tick` asks `IInputService.TryGetTap` once a frame rather than
+  subscribing to a `Tapped` event. There is exactly one asker, so Observer's one-to-many buys
+  nothing, and a delegate would only relocate the same call while reintroducing the frame-ordering
+  question the driven tick exists to remove. It also keeps the vocabulary consistent: a
+  `Tick`-driven controller asking "was there a tap this frame" is the same shape as a tower asking
+  "who is nearest".
+  - *The cost, which is real:* `wasPressedThisFrame` stays true for the whole frame and the service
+    consumes nothing, so two callers would both see one tap. `BuildController` must remain the only
+    caller — a constraint a queue would not have, and the price of the simpler shape.
+
+**This is now code rather than a plan.** `Tower.Tick` accumulates `dt`, re-scans
+`EnemyRegistry.FindNearest` when it crosses `TOWER_SCAN_INTERVAL_SEC`, and holds the result until
+the next scan. Three things that only became visible once it was written:
+
+- **The interval creates a staleness window, and the fix is a second check.** Up to 0.1 s passes
+  between acquiring a target and firing at it — plenty of time for it to die or walk out of range.
+  So `Tower` re-checks targetability *and* range at the moment of firing, not only at the moment
+  of scanning. Without it a tower spends its shots on corpses. That re-check is the real cost of
+  polling over an event, and it is cheaper than the event storm would have been.
+- **Scan and reload are separate timers**, because they answer different questions and run at
+  different rates. Collapsing them would tie fire rate to scan rate.
+- **The first scan is staggered** by a random fraction of the interval in `Configure`, so towers
+  placed in the same frame do not all scan on the same frame. One line, and it spreads the only
+  measurable cost this system has.
 
 Discrete, rare facts (a death, a phase change) use Observer. Continuous, per-frame-ish
 relationships use polling. The dividing line — *event frequency vs. subscriber count* — is
@@ -455,6 +791,27 @@ walks a `List<Enemy>` and calls `enemy.Tick(dt)`; `Enemy` has no `Update` at all
 - **Order is deterministic.** Undefined `Update` order between pooled instances is real
   frame-to-frame variance; one loop is one order.
 
+**The tick order is now five calls, and building goes first**: `build.Tick()`, then the spawner,
+the enemies, the towers, the projectiles. Building leads so that a tower added or removed this
+frame is settled before anything iterates the tower list. `TickTowers` also runs backwards now, the
+same cheap insurance the enemy loop already took, because that list can change mid-round.
+
+**`BuildController.Tick()` takes no `dt`, unlike every other `Tick` in this project, because
+nothing in it is time-based.** The absence is deliberate rather than an oversight — a parameter
+with no reader is what §2's discipline rejects — and worth stating, or the next reader adds one.
+
+**And the driven tick acquired its second beneficiary, which is the strongest thing §13.2 did for
+this section.** The "pausing is free" argument was made for enemies and predicted for
+`BuildState`; it now pays off before the phase machine exists. Building is allowed at all times in
+§13.2 because there are no phases, and that violates §10's "no `Instantiate` during a wave" in a
+bounded, named way — one allocation per player tap. When `BuildState` lands, it stops by simply not
+calling `build.Tick()`, with **no change to any of this code**. A `bool buildingAllowed` flag that
+nothing sets would have been worse than no flag at all.
+
+A third payoff, unanticipated: **removing a tower from `Level`'s list — not `SetActive(false)` — is
+what actually stops it firing**, because `Bootstrap` drives towers from that list. The driven tick
+turned a lifecycle question into a list operation.
+
 The interop saving (one native→managed crossing per frame instead of 64) is real but is *not* the
 argument — at this scale it is not the dominant cost, and claiming otherwise would be a
 measurement we did not take. **The honest cost** is that `Bootstrap` must own the live-enemy list
@@ -466,9 +823,44 @@ a registry. Those are the same ten lines `WaveRunner` inherits.
 
 ## 10. Mobile-specific notes
 
-- **Input:** `IInputService` exposes `TryGetTap(out Vector2 world)`. A `TouchInputService`
-  on device, an editor implementation reading the mouse — so the demo is playable in-editor
-  without a phone. Nothing else in the game knows which is running.
+- **Input:** `IInputService` exposes `TryGetTap(out Vector2 world)` — that much shipped as
+  written. **The rest of this bullet used to promise two implementations and that plan was wrong,
+  so here is what shipped instead.** It said a `TouchInputService` on device and an editor
+  implementation reading the mouse, on the reasoning that the split is what makes the demo playable
+  in-editor. The Input System had already absorbed that split: with `activeInputHandler: 1`,
+  `Touchscreen.current` and `Mouse.current` are read through one code path, so the two classes
+  would have been the same six lines with a different device line — and *nothing would ever have
+  chosen between them at runtime*, since the choice is a `#if UNITY_EDITOR`. That is a Strategy
+  with no varying strategy, which is what §6 calls architecture cosplay when it declines
+  `IFactory<T>`. One `PointerInputService` reads whichever device is present, and the demo is
+  playable in-editor because of the package, not because of the interface.
+  - **The interface stays, for a smaller and more honest reason: substitution in tests.**
+    `BuildController`'s tap dispatch is the logic §13.2 actually adds, and a ten-line
+    `FakeInputService` in the test assembly drives it deterministically, where the alternative is
+    dragging `InputTestFixture` and a synthetic device into every fixture. That is a test-shaped
+    justification and is recorded as one, the same honesty §14 applies to `Enemy.Initialize` — but
+    it is not the seam §14 declined for `internal` setters, which is a back door into a production
+    type where this is a whole implementation of a published contract. `IPoolStats` is the
+    precedent for a one-implementation interface with a written reason.
+    *Named trigger to split: the first device-only gesture.*
+  - **Press, not release**, and one member rather than press/hold/drag. Drag-to-place and
+    long-press-to-sell are state machines over taps, not new primitives, and a drag on a portrait
+    board puts a thumb over the target anyway. The misfire that acting on press risks is precisely
+    the affordance §6 says undo models, so the responsive choice is the one the undo stack already
+    covers. *Named trigger for either: on-device playtesting.*
+  - **`ScreenToWorldPoint` is correct here because the camera is orthographic** (size 7, at
+    z = −10) and the board is the z = 0 plane — which §2 pins by having no camera controller and no
+    scrolling. Safe by decision rather than by luck, and worth a line because under a perspective
+    camera both x and y would be wrong, which is the classic 2D tap bug.
+  - **The `EventSystem` arrived here, and §13 predicted the wrong trigger for it.** §13 said it
+    "arrives with the build phase"; it arrives with the first UI *widget*. A world tap goes through
+    `PointerInputService` and needs no `EventSystem` at all — one could not even raycast the board,
+    which has no colliders. The build menu's buttons are what require it, along with
+    `InputSystemUIInputModule` rather than `StandaloneInputModule`, since the legacy `Input` class
+    throws under `activeInputHandler: 1`.
+  - **One authoring consequence, silent if missed:** `TMP_Text` inherits
+    `Graphic.raycastTarget = true`, so the moment an `EventSystem` exists the HUD's own labels start
+    swallowing taps that land under them. Both are now set to `false`.
 - **Rendering:** one sprite atlas → few draw calls. Sprites on a single sorting layer with
   explicit `orderInLayer`. No per-object materials.
 - **Resolution:** Canvas Scaler set to *Scale With Screen Size* against `REFERENCE_RESOLUTION`,
@@ -481,11 +873,28 @@ a registry. Those are the same ten lines `WaveRunner` inherits.
   be tuned to — which is what gives `IPoolStats` a job today, with the §15 overlay still unbuilt.
   `PeakActive` now has a real reader: `EnemyFactory.Stats`, logged once by `Bootstrap.OnDestroy`.
   Cache `WaitForSeconds`, avoid LINQ in per-tick paths, cache `Transform` references.
-- **The sprite atlas does not exist yet, and that is a dated decision rather than an oversight.**
-  With one enemy sprite and one background there is nothing measurable to batch, and a two-sprite
-  atlas is the kind of decoration §1 disowns. **Named trigger: the second enemy type** — the first
-  moment two enemy sprites share a frame and batching has something to merge. Until then the
-  draw-call bullet above is design intent, not a measurement.
+- **§13.2 breaks that budget on purpose, in a bounded way, and it repairs itself.** A player
+  placing a tower is one `Instantiate`, and undoing a placement is one `Destroy` — during what is
+  nominally a wave, because no phase machine exists yet to say otherwise. It is one allocation per
+  tap, from a handful of taps, on a path this section does not police per frame. The reason it is
+  recorded rather than fixed is that it **disappears with no code change** when `BuildState` lands
+  and stops calling `BuildController.Tick()` (§9). A `bool buildingAllowed` that nothing sets would
+  have been a worse answer than the honest violation.
+- **The sprite atlas now exists — the named trigger fired.** It was deliberately deferred while
+  one enemy sprite and one background gave batching nothing to merge; the tower slice put a
+  soldier, a tower and a projectile on screen together, so it was authored:
+  `Art/MobileDemo.spriteatlasv2`, covering `Sprites/Enemies`, `Sprites/Towers` and
+  `Sprites/Projectiles`. **`Sprites/Environment` is deliberately excluded** — the three maps are
+  full-screen sprites that would blow past a sane atlas page, and each is one draw call on its own
+  whether atlased or not, so including them would cost memory to save nothing.
+  - *V2, not V1, and not by preference.* The two are different asset types and the editor honours
+    only the one `EditorSettings.spritePackerMode` selects; this project reports `SpriteAtlasV2`,
+    so a `.spriteatlas` would have been silently ignored. Worth knowing before debugging an atlas
+    that appears to do nothing.
+  - *One trap the authoring hit:* `SpriteAtlasAsset.SetPackingSettings` and `SetIncludeInBuild`
+    still compile but are obsolete no-ops. A V2 atlas keeps those on its **importer**
+    (`SpriteAtlasImporter`), so setting them on the asset leaves the defaults with no warning at
+    runtime.
 
 ### Build & player settings
 
@@ -541,24 +950,29 @@ Assets/
     Gameplay/       (MobileDemo.Gameplay.asmdef)
       Bootstrap.cs                         (composition root — §5, §13)
       Phases/       GameStateMachine.cs, BuildState.cs, WaveState.cs, ...
-      Enemies/      Enemy.cs, EnemyStates.cs, EnemyFactory.cs, EnemyDefinition.cs, EnemyPath.cs
+      Enemies/      Enemy.cs, EnemyStates.cs, EnemyFactory.cs, EnemyDefinition.cs, EnemyPath.cs,
+                    EnemyRegistry.cs
       Levels/       Level.cs, LevelRunner.cs        (LevelRunner planned — §4)
-      Towers/       Tower.cs, TowerDefinition.cs, Projectile.cs
+      Towers/       Tower.cs, TowerDefinition.cs, TowerCatalogue.cs, TowerFactory.cs,
+                    Projectile.cs, ProjectileFactory.cs
       Waves/        WaveRunner.cs, WaveDefinition.cs
       Economy/      Economy.cs
-      Build/        BuildController.cs, PlaceTowerCommand.cs, ...
-      Input/        TouchInputService.cs, EditorInputService.cs
+      Build/        BuildController.cs, PlacementRules.cs, PlaceTowerCommand.cs,
+                    SellTowerCommand.cs, BuildEvents.cs
+      Input/        PointerInputService.cs
     UI/             (MobileDemo.UI.asmdef)
-      HudPresenter.cs, BuildMenu.cs, EndScreen.cs
+      HudPresenter.cs, BuildMenu.cs, EndScreen.cs      (EndScreen planned)
     Editor/         (MobileDemo.Editor.asmdef — Editor platform only)
       PathEditor.cs, PoolOverlay.cs        (both planned — §12)
   Tests/
     EditMode/       (MobileDemo.Tests.EditMode.asmdef — see §14)
-  Data/             *.asset  (GameConfig, EnemyGreenSoldier, EnemyGreySoldier;
-                             Tower/Wave definitions planned)
-  Art/              sprites (atlas still deferred — §10)
+  Data/             *.asset  (GameConfig, EnemyGreenSoldier, EnemyGreySoldier,
+                             TowerGreen, TowerRed, TowerCatalogue;
+                             Wave definitions planned)
+  Art/              MobileDemo.spriteatlasv2  (§10 — Environment excluded)
     Sprites/Environment/   the three §1 maps: variant1..3
-  Prefabs/          EnemySoldier.prefab, Level_01..03.prefab  (tower, projectile planned)
+  Prefabs/          EnemySoldier.prefab, Tower.prefab, Projectile_Fire.prefab,
+                    Projectile_Bullet.prefab, Level_01..03.prefab
   Scenes/           Gameplay.unity
   Settings/         URP 2D pipeline assets — Unity's 2D template made these; left in place
   TextMesh Pro/     TMP Essential Resources — a one-time import, committed; see §15
@@ -602,9 +1016,17 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
 - **PascalCase, no spaces, no Unicode** in folder and asset names. Unity's command-line and
   batch tooling breaks on all three.
 - **Package references are per-assembly, not global.** `MobileDemo.Gameplay` references
-  `Unity.InputSystem` (the §10 input services); `MobileDemo.UI` references `UnityEngine.UI` and
-  `Unity.TextMeshPro` (§15). `MobileDemo.Core` references nothing but the engine — which is
-  precisely what makes it the layer everything else can safely depend on.
+  `Unity.InputSystem` (the §10 input service) and `UnityEngine.UI`; `MobileDemo.UI` references
+  `UnityEngine.UI` and `Unity.TextMeshPro` (§15). `MobileDemo.Core` references nothing but the
+  engine — which is precisely what makes it the layer everything else can safely depend on.
+  - **Both of those `UnityEngine.UI` entries are documentation rather than plumbing**, and it is
+    worth knowing before someone "tidies" one away. That assembly ships `autoReferenced: true`, so
+    every assembly here can already see it whether or not it is listed. Listing it states an actual
+    dependency — Gameplay's is one call, `EventSystem.IsPointerOverGameObject` (§10) — and keeps
+    the list honest if anyone ever sets `overrideReferences`. It does not weaken §3's rule; see the
+    note there for why Unity's `EventSystems` is not this project's UI layer.
+  - `MobileDemo.Tests.EditMode` deliberately references neither, because none of its fixtures names
+    a UI or input type — `FakeInputService` implements a Core interface and needs no device.
 - **`Interfaces/` is for the cross-cutting ones.** `ICommand`, `IGameState` and `IInputService`
   are contracts a whole layer implements and other layers name. An interface that exists to serve
   one type lives beside that type instead — which is why `IPoolable` and `IPoolStats` sit in
@@ -612,10 +1034,22 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
   would be filing by C# keyword rather than by responsibility.
 - **`EnemyPath.cs` sits in `Enemies/` rather than earning a `Path/` folder.** Same rule as the
   bullet above, one level up: a folder holding one file that serves one system is filing by noun,
-  not by responsibility. **Named trigger to move it:** the first *non-enemy* runtime consumer of
-  the path — say a build-slot system asking how far a tile is from the road. `Scripts/Editor/
-  PathEditor.cs` is deliberately **not** that trigger, because editor→runtime is the one-way
-  dependency this section already permits.
+  not by responsibility. The trigger to move it was "the first *non-enemy* runtime consumer of the
+  path — say a build-slot system asking how far a tile is from the road", with `Scripts/Editor/
+  PathEditor.cs` deliberately excluded because editor→runtime is a permitted one-way dependency.
+
+  **That trigger fired in §13.2, and the file did not move. Recorded rather than quietly ignored,
+  because a named trigger that fires and is skipped in silence is worse than never having had
+  one.** `PlacementRules` is exactly the predicted consumer — a build rule asking how far a point
+  is from the road — so the trigger fired against the letter of the rule. It did not fire against
+  the substance: `PlacementRules` takes `IReadOnlyList<Vector2>` and **never names `EnemyPath` at
+  all**. Only the baked *output* escaped the enemy system; the type still serves exactly one
+  system, which is what the folder rule is actually about. Moving it would mean a namespace change
+  rippling through six runtime files and three fixtures to buy a filing improvement with no
+  behavioural content.
+
+  **Trigger re-armed, and narrowed to close the loophole that let this one through:** the first
+  consumer that names the `EnemyPath` *type*.
 - **`Gameplay/Levels/` holds one file today and still gets a folder**, which is not a
   contradiction of the bullet above. The test is not "how many files" but "does the folder name a
   responsibility that will hold more than one" — `Levels/` gains `LevelRunner.cs` with §4's
@@ -632,6 +1066,12 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
   consulting `using` directives, finds the **namespace**, and fails `CS0118: 'Economy' is a
   namespace but is used like a type`. The folder keeps its name; only the namespace flattens.
   Said here and at the top of the file, or the next reader "fixes" it straight back into CS0118.
+  - **This is now a rule with two instances, not a one-off**, which is the difference between an
+    inconsistency and a convention. `Input/PointerInputService.cs` flattens to
+    `MobileDemo.Gameplay` for the same reason, and it is the more dangerous of the two: `Input` is
+    a far livelier identifier in Unity code than `Economy`, so a namespace by that name would
+    shadow it for every file in the assembly. `Build/` needs no such treatment, because `Build`
+    is not the name of any type in it — the same reason `Levels/` is safe next to `Level`.
 - **`Bootstrap.cs` sits at the Gameplay root, not in a subfolder**, matching `HudPresenter.cs` at
   the UI root. It is not a system in the `Enemies/`/`Phases/` sense; it is the seam that
   assembles them.
@@ -645,14 +1085,49 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
 retrofitted later, when untangling it would have meant moving files. Four of the five now hold
 code; `Editor` is still an empty shell, waiting on `PathEditor` and the Pool Overlay (§12).
 
+**§13.2 is the evidence that this was worth doing early.** A whole input layer, a whole command
+layer, a build UI and traffic in the previously-unused UI→Gameplay direction all landed inside the
+existing graph, and the only reference added was one that was already implicitly present (see the
+`autoReferenced` note above). That is what §3's "enforced by the compiler" buys: the slice most
+likely to smear across the layers could not.
+
 Leaf folders appear as their code does. **With code:** `Core/Events`, `Core/Pooling`,
 `Core/Config`, `Core/Interfaces`, `Gameplay/Enemies`, `Gameplay/Economy`, `Gameplay/Levels`,
-`Gameplay/` root (`Bootstrap.cs`), `UI/` root (`HudPresenter.cs`), `Tests/EditMode`. **Still only
-names in this table:** `Gameplay/Phases`, `Gameplay/Towers`, `Gameplay/Waves`, `Gameplay/Build`,
-`Gameplay/Input`, and `Editor/`.
+`Gameplay/Towers`, `Gameplay/Build`, `Gameplay/Input`, `Gameplay/` root (`Bootstrap.cs`), `UI/`
+root (`HudPresenter.cs`, `BuildMenu.cs`), `Tests/EditMode`. **Still only names in this table:**
+`Gameplay/Phases`, `Gameplay/Waves`, and `Editor/`.
+
+**`Editor/` is still empty, and that is now a deliberate re-decision rather than inertia.** Each
+slice's assets have been authored by a throwaway editor class run with `Unity.exe -executeMethod`
+and deleted once it had run. A script that authors assets once is scaffolding, and this table
+describes what ships. `PathEditor` and the Pool Overlay remain the first files that will actually
+live here.
+
+**That claim was false when §13.2 started, which is worth recording rather than silently
+repairing.** `SliceTwoAuthoring.cs` — 400 lines of it — was still on disk, so both this section and
+[systems/level.md](systems/level.md) described a deletion that had not happened. It has now been
+deleted, and the number it owned was not lost with it: `RoadClearance = 0.9f` moved onto
+`GameConfig` as `BUILD_ROAD_CLEARANCE` (§2), which is what lets the runtime placement rule and the
+already-authored towers agree about what "beside the road" means. `SliceThreeAuthoring.cs` is the
+third of these and is deleted the same way.
+
+**One thing the throwaway scripts do that is worth copying rather than rediscovering:** they reach
+`MobileDemo.UI`, `Unity.TextMeshPro` and `UnityEngine.UI` types **by name**, through
+`SerializedObject` and a type lookup, instead of adding those references to
+`MobileDemo.Editor.asmdef`. That asmdef is shipped configuration; a script that gets deleted is
+not, and leaving three references behind for a vanished file is exactly the drift the delete
+exists to avoid.
+
+**And the slice-two script's own defect is why `SliceThreeAuthoring` is idempotent by
+construction.** Running it three times left `Level_01.prefab` with **six** `Tower` instances and a
+two-entry `towers` array: it re-instantiated its towers on every run while only ever resetting
+`arraySize = 2`. The four orphans were never `Configure`d, so they rendered no sprite and never
+fired — invisible, and harmless enough that §13.1's recorded run numbers still stand. §13.2
+repairs them, and every step of its authoring script is written so that a second run is a no-op,
+which is the property whose absence caused this.
 
 Of the asset folders, `Art/`, `Scenes/`, `Data/`, `Prefabs/` and `TextMesh Pro/` all hold content:
-sprites, the three config/definition assets, and `EnemySoldier.prefab` + `Level_01.prefab`. The
+sprites and the atlas, five config/definition assets, and four prefabs plus `Level_01.prefab`. The
 tree above is now the tree on disk — **`Scenes/Gameplay.unity` is the real name rather than the
 target one**, renamed in place (F2's effect, via `AssetDatabase.RenameAsset`) so the guid survived
 and `EditorBuildSettings.asset` needed only its path rewritten.
@@ -689,6 +1164,13 @@ lifetime, pooling anything other than enemies and projectiles, and a PlayMode te
 a fixed budget is fine for one known wave sequence. Growth is now implemented, so the entry cannot
 stand; the reversal and what it cost are recorded at the decision point in §6's Object Pool entry,
 not deleted.
+
+**§13.2 changed nothing in this list, and that is worth one sentence so the absence reads as
+checked rather than forgotten.** `UpgradeTowerCommand`, redo, phase-gated building, authored build
+plots and a `TowerRegistry` are all *deferrals with named triggers* — recorded at their decision
+points in §6, §7 and §13.2 — not exclusions. The one thing §13.2 genuinely cut for good is redo,
+and it is cut at §6's Command entry rather than added here, because the reason is a contradiction
+in that entry rather than a question of scope.
 
 ***Multiple maps* was the second, and this one is a scope reversal rather than an implementation
 one.** It was listed on the reasoning that one map is enough to demonstrate a tower-defense round,
@@ -794,11 +1276,8 @@ rendering `Camera.main` into a `RenderTexture` is **not** the workaround, becaus
 – Overlay canvas does not render through a camera at all and the photograph would miss the one
 thing it exists to show.
 
-With that seen, the slice is closed and the next one is **the first tower** (introducing §9's
-polling and projectile pooling), then the build phase (Command), then the wave sequence and
-phases.
-
-The four steps, kept rather than deleted, because the order is the argument:
+With that seen, the slice is closed. The four steps, kept rather than deleted, because the order
+is the argument:
 
 1. One `EnemyDefinition`, one hard-coded path (waypoints in the scene).
 2. A pooled spawner (`ObjectPool<Enemy>` + `EnemyFactory`) *gets* one enemy — `Release` is the
@@ -806,10 +1285,8 @@ The four steps, kept rather than deleted, because the order is the argument:
 3. The enemy follows the path, reaches the end, and raises `EnemyLeaked`.
 4. A single `HudPresenter` label subscribed to the bus decrements a lives counter.
 
-That slice exercises Pool + Factory + Observer + enemy State with **no towers, no waves,
-no build UI, no commands**. When it runs clean, we add the first tower (introducing polling
-and projectile pooling), then the build phase (Command), then the wave sequence and phases.
-One verified slice at a time.
+That slice exercised Pool + Factory + Observer + enemy State with **no towers, no waves, no build
+UI, no commands** — which is what §13.1 below then built on. One verified slice at a time.
 
 ### What the slice deliberately did *not* do
 
@@ -833,7 +1310,245 @@ caller or a field with no writer:
 enemy state (`Spawning`) has a real but thin job today — a ~0.15 s placed-but-not-moving window
 whose eventual owners are a spawn pop and a not-yet-targetable rule; and `Enemy.Initialize()` is
 idempotent purely so EditMode tests can drive it (see §14), which is a test-shaped concession in
-production code and is recorded as one.
+production code and is recorded as one. *(The first of those has since been paid off: the
+not-yet-targetable rule is now `Enemy.IsTargetable`, and §13.1's `TakeDamage` gate is what turned
+that window from cosmetic into a gameplay rule.)*
+
+---
+
+## 13.1 Second slice — the first tower — **done; seen end to end**
+
+The slice that makes the game a game: enemies can now be killed rather than only leaked. New
+types: `Tower`, `TowerDefinition`, `Projectile`, `ProjectileFactory`, `EnemyRegistry`. Changed:
+`Enemy` (health, damage, a death *cause*), `EnemyStates` (`EnemyDyingState` branches), `Economy`
+(the currency half), `Level` (`Tower[]`), `Bootstrap`, `HudPresenter`, `GameConfig`.
+
+**What it makes real, rather than asserted:**
+
+- **§9's polling.** Until now no code polled anything, so the whole polling-vs-events argument was
+  a plan. `Tower.Tick` is the first tick-interval scan in the project — and writing it surfaced
+  the staleness window §9 now records.
+- **§6's projectile pooling**, and with it the first `ObjectPool<T>` client that is not an enemy —
+  which is what proves the generic pool was generic for a reason.
+- **`IPoolStats` as a collection.** Its own comment said it exists because `ObjectPool<Enemy>` and
+  `ObjectPool<Projectile>` are unrelated closed types; `ProjectileFactory.Stats` is the first code
+  that actually needs that to be true.
+- **Four of §8's six events now have publishers.** `EnemyKilled` and `CurrencyChanged` were
+  contract-only through §13.
+
+### Seen running, on `Gameplay.unity` over a 30 s scripted session
+
+- **Both towers fire.** `Pool 'Projectile_Bullet': PeakActive=1` and
+  `Pool 'Projectile_Fire': PeakActive=1`. That second number is the one worth having: it took
+  three placement attempts to get, and the reason is below.
+- **Enemies die before the end.** `$150` on the HUD from a starting `$100` — ten kills at the
+  green soldier's reward of 5 — and `Lives 20`, unchanged, against §13's baseline of `Lives 14`
+  after 32 s with no towers. Zero leaks is the towers working.
+- **Enemy `PeakActive` fell from 9 to 5**: enemies are being removed mid-path rather than walking
+  the whole route.
+- **No pool grew.** `PoolRoot` held exactly 286 children — 30 enemies + 128 + 128 projectiles —
+  and no growth warning was logged by any of the three pools.
+- **123 EditMode tests green** (70 before this slice, 53 added), run headless via `-runTests`.
+
+### The three things this slice cost, recorded because they are what a reader cannot infer
+
+**Tower *placement* dominated tower *tuning*, which was the opposite of the expectation.** The
+first attempt put the green tower beside path segment 1. It killed every enemy within a second of
+spawning: enemy `PeakActive` collapsed to 1, nothing was ever seen to walk, and the red tower —
+further down the path — never acquired a target at all, so half the slice's new content was
+invisible. Moving it mid-path fixed the first problem and not the second. What fixed the second was
+**putting the red tower first along the path and the green one second**, which is the reverse of
+the obvious ordering: red is the slow splash tower and wants the stretch where enemies are at full
+health, green is the fast single-target one and works as a backstop. No number was changed to
+achieve any of this.
+
+**Offsetting "beside the road" put a tower off the board.** Placing at a segment midpoint plus a
+perpendicular offset is right, but the perpendicular has two directions and the authoring script
+took one blindly — landing a tower half off the board. It now evaluates both sides and takes the
+one nearer the map centre. *(This paragraph used to give the map's right edge as x = 2.56. §13.2
+measured it: the map is 8.32 × 12.16, so the right edge is 4.16 and the **camera's** visible
+half-width is 3.94. The bug was real; the number was wrong.)*
+
+**One real bug, caught by a test rather than by the run.** `Enemy.IsTargetable` was
+`current == moving`, which is `true` when both are null — so an enemy whose `Awake` had not run
+reported itself shootable. Play mode hides this (`Awake` always runs); a pooled instance between
+`Get()` and `Configure()`, and every EditMode test, does not.
+
+And a fourth, found in review rather than at runtime: `Tower`'s reload timer originally
+accumulated while no target existed, so a tower idle for ten seconds banked ten seconds of reload
+and emptied it into the first enemy in range, one shot per frame. It is now capped at a single
+shot — ready, not stockpiled — with `Tick_AfterIdlingWithNoTarget_DoesNotBurstFire` pinning it.
+
+### What this slice deliberately did *not* do
+
+- **No `BuildController`, `ICommand` or `IInputService`.** Towers are placed by hand inside
+  `Level_01.prefab`, which §6 already sanctions ("a handful exist for the whole round and are
+  placed by hand"). Nothing is tappable, so there is still no `EventSystem`.
+- **No `GameStateMachine` or `WaveRunner`.** `Bootstrap`'s spawn timer is still the stand-in, and
+  `PhaseChanged`/`WaveCompleted` still have no publishers.
+- **No currency *spending*.** `Economy` earns only. §6's Command entry already records the rule
+  the first spender has to honour — `Undo` must refund *and* re-announce.
+- **No upgrade tiers on `TowerDefinition`**, for the reason §7 gives: a `cost` is one number, a
+  tier list is a data structure whose shape the feature would decide.
+- **No tower rotation toward its target, and no hit or death effects.** Both are PrimeTween's job
+  and PrimeTween is not installed yet (§15).
+
+The next slice is **the build phase** — `IInputService`, `BuildController` and the three
+`ICommand`s — which is what finally spends the currency this one started earning. Then the wave
+sequence and phases.
+
+---
+
+## 13.2 Third slice — the build phase — **done; partly certified, and the gap is named**
+
+The slice that gives Command an honest home. New types: `ICommand`, `IInputService`,
+`PointerInputService`, `BuildController`, `PlacementRules`, `PlaceTowerCommand`,
+`SellTowerCommand`, `BuildActionRequested`, `TowerFactory`, `TowerCatalogue`, `BuildMenu`.
+Changed: `GameConfig` (three fields), `Economy` (`TrySpend`/`Refund`), `Level` (a mutable live
+tower set and map bounds), `Tower` (`Configure` takes its definition), `Bootstrap`.
+
+**Two of the three commands, not three.** §13.1 predicted three; §7 and §6 record why
+`UpgradeTowerCommand` is deferred, and the reason is not the one §7 originally gave.
+
+### What it makes real, rather than asserted
+
+- **Command, with a stack the player can press.** §6 stakes the pattern's whole justification on
+  undo being a real affordance rather than a class with a method. There is a HUD button.
+- **`Economy` spends.** The oldest promise in the document — §6's "`Undo` must refund *and* let
+  that raise again" — is now code, and pinned by a test that asserts the *sequence* of
+  `CurrencyChanged` rather than the final balance.
+- **§10's `IInputService`**, and with it the `Unity.InputSystem` reference §13 flagged as
+  "correctly present and unused". It also corrected §10: one implementation, not two.
+- **`TowerDefinition.cost` has a reader**, so that asset has no authored-but-unread fields left.
+- **Factory without Object Pool** — `TowerFactory`, which is what shows §6's two patterns were
+  separable rather than one habit.
+- **The first UI→Gameplay traffic**, which is the direction §3's rule is easy to break.
+
+### Seen running, on `Gameplay.unity`
+
+- **205 EditMode tests green**, run headless via `-runTests` (123 before this slice). Note for the
+  next person driving that: `-runTests` must **not** be combined with `-quit`, or the editor exits
+  before the runner starts and reports success having run nothing.
+- **The authoring script is idempotent, proven by running it twice.** First run:
+  `orphan towers removed: 4, towers now: 2`. Second: `removed: 0, towers now: 2`, with the
+  `EventSystem` and `BuildMenu` both recognised as already present.
+- **Towers fire and the economy climbs.** Over a ~26 s session with no player input, currency went
+  `$100 → $170` on kills while `Lives 20` never moved — §13.1's result reproduced from the current
+  repo state, which matters more than usual here (see the asset-loss note below).
+- **The map's real extent, measured rather than assumed:** centre `(0,0)`, size `8.32 × 12.16`, so
+  x ∈ [-4.16, 4.16] and y ∈ [-6.08, 6.08]. **This contradicts §13.1's "a map whose right edge is
+  2.56"**, which was wrong; the camera's *visible* half-width is 3.94, so the map is wider than the
+  screen and there are no side margins — only a ~0.9-unit band above and below the art.
+
+### What is *not* certified, and why it is a harness limit rather than a hedge
+
+**No synthesized tap ever reached `BuildController`, across six scripted sessions.** The instrumented
+run says precisely where it stops, and it is worth recording because the next person will try the
+same thing:
+
+- The synthesized press *does* reach the device — `pressed=True` at the correct screen position,
+  converted from world through `Camera.WorldToScreenPoint`.
+- `EventSystem.IsPointerOverGameObject()` returns **false**, so the §10 UI-blocking check is *not*
+  what swallows it.
+- But `Application.isFocused` is **false** for a CLI-launched editor, and with the default
+  `backgroundBehavior = ResetAndDisableNonBackgroundDevices` the `wasPressedThisFrame` edge never
+  survives into a frame the player loop reads. Setting `IgnoreFocus` made it strictly worse — the
+  device state was wiped to `(0,0)` instead.
+
+So the tap dispatch is covered by 17 `BuildControllerTests` through `FakeInputService` and by
+nothing on-screen. **What remains unproven is exactly one link: that a real press reaches
+`PointerInputService` in play mode** — one line of device reading, in the one class §14 lists as
+deliberately untested. It needs a focused editor and a human hand, which is the honest way to close
+it.
+
+Two harness facts to carry forward: `-runTests` with `-quit` silently runs nothing, and
+`PlayerSettings.runInBackground` **was** left at `1` by the session despite the harness reverting
+it — the write did not flush before the editor exited. It has been reverted by hand and
+`ProjectSettings.asset` is clean. §13 recorded this trap and it still bit.
+
+### The five things this slice cost
+
+**Both `TowerDefinition` assets were found holding pure field defaults, and §13.1's run could not
+have been reproduced without repairing them.** `TowerGreen` and `TowerRed` each had no sprite, no
+projectile prefab, `range 3`, `2 shots/s` and `cost 50` — identical to each other, and to nothing
+this document describes. The consequence is silent: with no projectile prefab, `Tower.Fire` returns
+early, so neither tower fires, no projectile pool is ever built, and the console stays clean.
+
+The cause is the **same non-idempotency that left six tower instances in `Level_01`**, in a second
+form. `SliceTwoAuthoring.AuthorTowerDefinition` called `AssetDatabase.CreateAsset` on a path that
+already held an asset — which replaces it with a fresh default instance — and its `SetPrivate` then
+wrote to the detached local rather than to the asset Unity had just written. Its projectile and
+prefab authoring was immune because it set fields *before* `SaveAsPrefabAsset`. So one script had
+two data-losing bugs of the same shape, and both were invisible: four towers that rendered nothing,
+and two definitions that disarmed every tower on the board.
+
+They are restored to the values §7 and §13.1 record (green: 2.6 range, 2/s, `Projectile_Bullet`,
+cost 50; red: 2.1, 0.8/s, `Projectile_Fire`, cost 75), and the currency climb above is the evidence
+that the repair took. **The general lesson, worth more than either bug: a script that authors an
+asset must load-and-set, never `CreateAsset` over an existing path, and must be a no-op on a second
+run.** That is the property `SliceThreeAuthoring` was built around, and the reason it was run twice
+before being believed.
+
+**`GameEvents.cs` cannot hold every event, and finding that out changed the design.** The plan was
+one new event in Core's catalogue file. But its payload names `TowerDefinition`, and
+`MobileDemo.Core` references nothing project-specific — so the struct lives in
+`Gameplay/Build/BuildEvents.cs` instead. A payload's type decides which assembly its event can live
+in. The alternative was an `int` index into the catalogue, which keeps §8's declarations in one file
+at the cost of a runtime failure mode the bus exists to eliminate. §8 records the split.
+
+**The `EventSystem` cost the HUD its raycasts.** `TMP_Text` inherits `raycastTarget = true`, so
+adding an `EventSystem` for the menu's buttons silently turned the existing "Lives" and "$" labels
+into tap-blockers over the board. Both are now `false`. Nothing errors when this is wrong — the
+taps simply stop arriving in one corner of the screen.
+
+**A base-class test fixture did not survive the lint, and the fix was better than the original.**
+Four fixtures wanted the same fourteen lines of scaffolding, so the first attempt was an abstract
+base with `protected` fields. The project's naming rules reserve camelCase for *private* fields, so
+`protected` ones must be PascalCase — which would have meant `Level Level` and `Economy Economy`,
+exactly the shadowing §11 went out of its way to avoid once already. It is composition now: a
+`BuildScaffold` object each fixture holds, reached through a `scaffold.` prefix. That also made the
+lifetime explicit instead of depending on NUnit's base-then-derived `SetUp` order.
+
+**And a mistake caught by writing the test rather than the code.** The first road-clearance test was
+named for building "inside the elbow between two segments" and its arithmetic did not support the
+claim: at a corner, the nearest point on both adjoining segments *is* that corner, so a
+waypoint-distance check would have caught it too. The real failure of measuring to waypoints is
+mid-segment — beside the middle of a long straight run, where every waypoint is far away. The test
+and the comment in `PlacementRules` that it came from were both wrong, and both were fixed.
+
+### What this slice deliberately did *not* do
+
+- **No `UpgradeTowerCommand`.** With one gesture and no per-tower UI, upgrade and sell compete for
+  the same tap. *Trigger: a per-tower UI.* §7 records that the data shape question is already
+  answered, so only the input question is open.
+- **No redo**, permanently — see §6, where it contradicted the paragraph four bullets below it.
+- **No `GameStateMachine`, `BuildState` or `PhaseChanged` publisher, and so no phase gating.**
+  Building is allowed at all times, which breaks §10's allocation budget in a bounded, named way
+  and repairs itself for free when `BuildState` lands (§9). Nothing clears the undo stack either,
+  which is why a sold tower's GameObject lingers, inactive, for the rest of the round.
+- **No `TowerRegistry`** — `Level` owns the live set, because lifetime says so (§6).
+- **No authored build plots** — a distance rule generalises across all three maps with no per-map
+  authoring. *Trigger: a map whose road art yields a legal spot that is visually on a river.*
+- **No second `IInputService` implementation**, and no press/hold/drag. Both have triggers in §10.
+- **No `Economy.CanAfford`**, and no `bool Undo()` or `ICommand.CanUndo` — §6 proves the second is
+  unnecessary rather than merely omitting it.
+- **No placement pop, range circle or rejected-tap flash.** All three are PrimeTween's, and it is
+  still not installed (§15). Rejections are therefore silent, with the HUD as the only feedback.
+
+### One test-shaped concession, recorded as one
+
+`TowerFactory.Destroy` branches on `Application.isPlaying`: `Destroy` in play mode,
+`DestroyImmediate` outside it. Six tests failed without it, because outside play mode `Destroy`
+logs an error and defers to a frame that never arrives — the same EditMode fact §14 already records
+for `ObjectPoolTests`. `DestroyImmediate` is the wrong call at runtime, so the branch is on
+environment rather than preference. It lives on the factory rather than in `PlaceTowerCommand.Undo`
+because the factory is the type whose job is lifecycle: it creates, so it destroys, and the command
+no longer names `UnityEngine.Object` at all.
+
+The next slice is **phases and waves** — `GameStateMachine`, `BuildState`/`WaveState`,
+`WaveRunner` — which is what clears the undo stack, destroys sold towers, ends mid-wave building,
+gives `PhaseChanged` and `WaveCompleted` their publishers, and finally lets §2's two prewarm
+figures be retuned against a real measurement.
 
 ---
 
@@ -863,10 +1578,63 @@ observable from inside `OnSpawn`/`OnDespawn` and fully deterministic — which i
 actually depends on.
 
 §13's slice added three fixtures. `EconomyTests` is the clean case this section describes — a
-plain class whose only collaborator is a static bus, so 11 tests run with no scene at all.
+plain class whose only collaborator is a static bus, so it runs with no scene at all.
 `EnemyFactoryTests` reuses `ObjectPoolTests`' runtime-built-prefab technique. `EnemyTests` drives
 the micro machine and path following through `Enemy.Tick(dt)` with an explicit `dt`, which is the
 concrete payoff of §9's driven-tick decision: `Update` would not be callable from a test at all.
+
+§13.1 added three more — `TowerTests`, `ProjectileTests`, `ProjectileFactoryTests` — taking the
+suite from 70 to **123**. Two things about them are worth recording:
+
+**`SerializedFields`, and the seam this section previously declined.** `Tower`, `TowerDefinition`
+and `Projectile` carry their tuning in `[SerializeField]` private fields — which is what makes
+them Inspector-authorable and unreachable from a test. A one-method reflection helper in the test
+assembly sets them. The alternatives were worse: `internal` setters would put a seam in production
+code that only tests use, and `SerializedObject` drags `UnityEditor` and a serialization
+round-trip into fixtures needing neither. This does not contradict the `EnemyPath` decision two
+paragraphs down, and the difference is *what the reflection reaches*: `EnemyPath` needed it to
+exercise the code under test, where these fixtures need it only to **build the fixture**, then
+test real behaviour through public methods.
+
+**Firing is asserted through `IPoolStats.PeakActive`, not through a private target field.** What
+matters about a tower is that it puts projectiles in the air at the right rate, at the right
+enemy, and not otherwise — and the pool already counts that. It also means the tests would catch a
+tower that fired correctly while leaking projectiles.
+
+§13.2 added seven more — `PlacementRulesTests`, `PlaceTowerCommandTests`, `SellTowerCommandTests`,
+`BuildControllerTests`, `TowerFactoryTests`, `TowerCatalogueTests`, `LevelTests` — plus
+`BuildScaffold` and `FakeInputService`, and expanded `EconomyTests` with the twelve spend/refund
+cases §14 has promised since the beginning. That takes the suite from 123 to **205**. Four things
+about them are worth recording:
+
+**`FakeInputService` is what actually justifies `IInputService`.** §10 now says so outright, having
+previously credited the interface with a device/editor split the Input System already provides. The
+whole build path — tap, hit-test, validate, choose a command, push it — is exercised with no
+device, no camera and no play mode. That is a test-shaped justification for a production interface
+and is labelled as one, the same honesty this section applies to `Enemy.Initialize`.
+
+**`BuildScaffold` is composition, not a base fixture, and the lint decided it.** `protected` fields
+must be PascalCase under this project's naming rules, which would have produced `Level Level` and
+`Economy Economy` — the shadowing §11 avoided once already. Reached as `scaffold.Level`, the names
+are unambiguous, and the lifetime is explicit rather than dependent on NUnit's base-then-derived
+`SetUp` order.
+
+**Three tests carry most of the argument**, and are worth naming because a future refactor could
+break each silently:
+`SpendThenRefund_PublishesCurrencyChangedBothTimes` asserts the *sequence* of `CurrencyChanged`,
+because §6's rule is about the second publish happening and a final-total check would pass without
+it. `Undo_AfterPlacingOnTopOfASell_UnwindsBothAndRestoresTheOpeningBalance` pins the LIFO-solvency
+invariant that lets `ICommand.Undo` return `void`. And
+`PlaceTowerCommandTests.Execute_ThenTick_PutsAProjectileInTheAir` is the only thing that catches
+the silent-no-shots hole: a runtime-placed tower whose projectile prefab was never prewarmed fires
+nothing and logs nothing at the point of failure.
+
+**`LevelTests` arrives now, and it does not reverse the `EnemyPath` decision two paragraphs down.**
+That decision declined a fixture for ~15 lines of bake-and-index reachable only through reflection.
+`Level` stopped being two serialized getters the moment it grew a lazy-seeded runtime list and two
+mutators — and `Towers_WithoutAwake_SeedsFromTheSerializedArray` pins a hazard play mode actively
+hides, since in play mode `Awake` always runs and the undefined ordering between GameObjects
+happens to work most of the time.
 
 **A second EditMode limit, stated rather than discovered: `Awake` is not sent outside play mode.**
 So a test's `AddComponent<Enemy>()` never initializes. `Enemy.Initialize()` is therefore
@@ -881,7 +1649,10 @@ the pool's instances do — an unparented SO otherwise leaks for the whole edito
 **Not tested, and why:** `Bootstrap` (its job is wiring an asset, a prefab, two scene components
 and a Canvas — a test would have to build all four and would then be testing Unity's
 serialization; its `targetFrameRate`, spawn cadence, release loop and `Awake`/`OnEnable`/`Start`
-ordering are all Play-Mode behaviour, and there is no PlayMode assembly per §12); `HudPresenter`
+ordering are all Play-Mode behaviour, and there is no PlayMode assembly per §12);
+`PointerInputService` (`Mouse.current` is null in EditMode and `InputTestFixture` is declined, so
+what would remain to assert is `camera.ScreenToWorldPoint`, which is Unity's — the interface exists
+precisely so that everything *downstream* of it is tested); `HudPresenter` and `BuildMenu`
 (excluded by assembly reference, by design — see the paragraph below, which is now load-bearing
 rather than incidental); and `EnemyPath` (~15 lines of bake and indexing, where a test would need
 reflection or `SerializedObject` to reach a `[SerializeField] Transform[]` — a seam bought for
@@ -910,7 +1681,7 @@ the included one — it shows the same judgment as §6's "where I did *not* use 
 ### First-party (Unity packages) — included
 | Package | Why it's here | Ties to |
 |---|---|---|
-| **Input System** | Touch handling, sat behind `IInputService` (device vs editor impl) | §10 |
+| **Input System** | Touch and mouse handling, behind `IInputService` — **now used**, by `PointerInputService`. The "(device vs editor impl)" this row used to claim is gone: the package reads both through one code path, which is why §10 ships one implementation | §10 |
 | **2D Sprite + Sprite Atlas** | The atlas is what *backs* the draw-call budget — not optional flavor | §10 |
 | **TextMeshPro** | Crisp scalable UI text; its absence would look odd. Needed a **one-time `Window > TextMeshPro > Import TMP Essential Resources`** — **now done and committed**: 3.9 MB under `Assets/TextMesh Pro/`. Without it a `TextMeshProUGUI` has no font asset and no shaders, and renders *nothing*, with no error | §5 UI |
 | **Test Framework (UTF)** | Runs the EditMode tests; without it §14 is just a claim | §14 |
@@ -938,7 +1709,12 @@ objects; rolling our own for pooled `Component`s is a deliberate choice, recorde
 "knew and chose," not "didn't know."
 
 ### Third-party — exactly one
-- **PrimeTween** — for game feel (placement pop, hit-flash, UI slides). Polish is
+- **PrimeTween** — for game feel. **Its jobs are now concrete rather than illustrative**, which is
+  the change §13.2 makes to this entry: a placement pop when a tower lands, a flash on a *rejected*
+  tap (the build phase's only missing feedback — rejections are currently silent, with the HUD as
+  the sole signal), a hit-flash, and UI slides. Still not installed, so those four are the shape of
+  the next polish pass rather than a claim about today. Originally listed as (placement pop,
+  hit-flash, UI slides). Polish is
   disproportionately what makes a demo read as *finished*. Chosen over the more popular
   **DOTween** specifically because PrimeTween is **allocation-free**, which is consistent
   with §10's allocation budget; DOTween allocates on each tween start, and tweens run
@@ -1039,3 +1815,17 @@ serialized fields, and this slice is the first one with enough `MonoBehaviour` c
 DLL under `Assets/` with a `RoslynAnalyzer` label, which answers to the policy at the top of this
 section — but the case for it is now concrete rather than anticipated, and this is where to
 revisit it.
+
+**§13.2 needed no new suppressions, and the case for the analyzer did not sharpen further** — worth
+saying so the silence is not read as an oversight. Almost everything the build slice added is a
+plain C# class (`BuildController`, `PlacementRules`, both commands, `TowerFactory`,
+`PointerInputService`), where the `UNT####` rules have nothing to say; only `BuildMenu` and three
+serialized fields on `Bootstrap` are `MonoBehaviour` surface, and those land on the four rules
+already held at `suggestion`.
+
+**The lint did shape one design decision, which is the first time it has.** A base-class test
+fixture with `protected` fields fails `IDE1006`, because the naming rules above reserve camelCase
+for *private* fields — and PascalCasing them would have produced `Level Level` and
+`Economy Economy`, the shadowing §11 already avoided once. The fixture became composition instead
+(§14). Recorded because it is the lint doing the job the severity policy claims for it: a hard gate
+at a deliberate check, catching something real, without stopping the edit-compile-play loop.

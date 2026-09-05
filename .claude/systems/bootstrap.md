@@ -3,10 +3,26 @@
 The composition root for [ARCHITECTURE.md §13](../ARCHITECTURE.md)'s vertical slice. **Explicitly
 transitional** — most of what it does has a named successor, listed under Status.
 
+> **Over CLAUDE.md's ~150-line line, and here the rule is diagnosing correctly rather than
+> misfiring.** This class really is doing too much: it composes, validates, spawns, orders five
+> tick calls and reports pool statistics. The difference from an accidental god object is that
+> every one of those jobs already has a named owner waiting in the Status table, and the tower
+> slice moved one out (the live-enemy loop, now [`EnemyRegistry`](enemy-registry.md)) rather than
+> adding to the pile. If this guide grows again without that table shrinking, the rule is right
+> and the class needs splitting.
+>
+> **That has now happened, so the trigger is armed rather than hypothetical.** The build slice
+> added three serialized references, a fifth tick call and a second composition point in `Start`,
+> while the Status table lost **nothing** — `BuildController` took the build phase's jobs, but the
+> tick order, the spawn timer and the single level reference are all still here. The next slice
+> (phases) is the one that has to take the tick order out, and if it does not, this class should be
+> split whether or not the successors have arrived.
+
 ## Responsibility
 
-Assemble the slice and drive it: read `GameConfig`, set the frame rate, build the pool, the
-factory and the economy, spawn on a timer, tick the live enemies, release the finished ones.
+Assemble the slice and drive it: read `GameConfig`, set the frame rate, build the pools, the
+factories, the economy, the enemy registry, the input service and the build controller, configure
+the level's towers, spawn on a timer, and drive one tick per frame in the right order.
 
 It deliberately does **not**:
 
@@ -16,8 +32,17 @@ It deliberately does **not**:
   subscribes itself. That is §3's rule paying off concretely, and it is why the composition root
   does not need to sit in a fifth assembly above UI.
 - **Model phases.** There is no `GameStateMachine` here. See Gotchas.
-- **Touch the pool after construction.** [`EnemyFactory`](enemy-factory.md) owns it privately.
+- **Touch the pools after construction.** [`EnemyFactory`](enemy-factory.md) and
+  [`ProjectileFactory`](projectile.md) own them privately.
+- **Own the live-enemy list any more.** [`EnemyRegistry`](enemy-registry.md) does, since three
+  systems need it. `Bootstrap` constructs it and hands it out.
+- **Place towers.** Two are authored inside the level prefab and the rest come from
+  [`BuildController`](build-controller.md); `Bootstrap` only configures and ticks whatever
+  [`Level.Towers`](level.md) exposes. It does not hold the live list either.
+- **Decide anything about a tap.** It constructs the input service and the build controller and
+  calls `Tick`. Where a tower may go is [`PlacementRules`](build-controller.md)'.
 - **Stop at zero lives.** The defeat check is §4's job.
+- **Gate building on a phase.** There are no phases, so building is always allowed. See Gotchas.
 
 ## Key types
 
@@ -41,18 +66,27 @@ The one design decision it does carry is the **driven tick** — see Gotchas and
 
 | Direction | With |
 |---|---|
-| Constructs | [`Economy`](economy.md), [`EnemyFactory`](enemy-factory.md), [`ObjectPool<Enemy>`](object-pool.md) |
-| Calls | `Economy.Subscribe`/`Unsubscribe`/`PublishCurrentState`, `EnemyFactory.Create`/`Release`, `Enemy.Tick` |
-| Reads | `GameConfig`, `EnemyDefinition`, [`Level`](level.md) — and through it the [`EnemyPath`](enemy.md) |
-| Events | **none of its own.** It raises nothing and subscribes to nothing; it only makes `Economy` do so at the right moments |
+| Constructs | [`Economy`](economy.md), [`EnemyFactory`](enemy-factory.md), [`ObjectPool<Enemy>`](object-pool.md), [`EnemyRegistry`](enemy-registry.md), [`ProjectileFactory`](projectile.md), [`TowerFactory`](tower-factory.md), [`PointerInputService`](input-service.md), [`PlacementRules`](build-controller.md), [`BuildController`](build-controller.md) |
+| Calls | `Economy.Subscribe`/`Unsubscribe`/`PublishCurrentState`, `BuildController.Subscribe`/`Unsubscribe`/`Tick`, `EnemyFactory.Create`, `EnemyRegistry.Add`/`Tick`, `TowerFactory.Configure`, `Tower.Tick`, `ProjectileFactory.Tick` |
+| Reads | `GameConfig`, `EnemyDefinition`, `TowerCatalogue`, [`Level`](level.md) — and through it the [`EnemyPath`](enemy.md), its map bounds and its [`Tower` list](tower.md) |
+| Events | **none of its own.** It raises nothing and subscribes to nothing; it only makes `Economy` and `BuildController` do so at the right moments |
 
-Depends on `MobileDemo.Core.Config`, `.Pooling`, `MobileDemo.Gameplay.Enemies`,
-`System.Collections.Generic` and `UnityEngine`.
+Depends on `MobileDemo.Core.Config`, `.Interfaces`, `.Pooling`, `MobileDemo.Gameplay.Build`,
+`.Enemies`, `.Levels`, `.Towers`, `System.Collections.Generic` and `UnityEngine`.
 
 ## Data
 
-Six serialized scene references: `config`, `enemyPrefab`, `enemyDefinition`, `level`,
-`poolParent`, and `spawnIntervalSeconds`.
+**Nine** serialized scene references. Six from earlier slices — `config`, `enemyPrefab`,
+`enemyDefinition`, `level`, `poolParent`, `spawnIntervalSeconds` — and three from the build slice:
+`sceneCamera`, `towerPrefab` and `catalogue`.
+
+The tower slice cost this component **no** new wiring, because towers and projectile prefabs
+arrived through `Level` and `TowerDefinition` — the claim [level.md](level.md) made when `Level`
+was introduced, tested. **The build slice cost three, and each is a genuinely new kind of thing**
+rather than a leak: a `Camera` (the input service needs one to convert a tap, and
+`Camera.main` is a tag search), the `Tower` prefab (nothing else knew it — the authored towers are
+prefab *instances*, not a prefab reference), and the catalogue (which types are buildable is
+content that did not previously exist anywhere).
 
 It holds a `Level` rather than an `EnemyPath` because a level is what gets swapped (§1) — so the
 wave slice can add `WaveDefinition[]` to [`Level`](level.md) without touching any wiring here.
@@ -91,8 +125,44 @@ data, not a global constant, and §2's list does not contain it. It is the field
   three maps: pooled enemies outlive a level swap, and a pool whose instances were destroyed with
   the old level has no way to notice. Between them these are the two scene values most likely to
   produce a baffling bug if got wrong.
+- **`Awake` composes, `Start` composes again — and the split is load-bearing.** Most of the graph
+  is built in `Awake`, but `PlacementRules` and `BuildController` are built in `Start`, because
+  `PlacementRules` reads the baked waypoints and `EnemyPath` bakes them in *its* `Awake`, which
+  Unity does not order against this one. Same one-line discipline as the path gotcha above, second
+  beneficiary.
+  - **The consequence that is easy to get wrong:** `OnEnable` runs *before* the first `Start`, so
+    `build?.Subscribe()` there is a no-op on the first cycle. `Start` therefore subscribes
+    explicitly after constructing, and `OnEnable` covers every *later* enable. Removing either
+    leaves the build menu's buttons silently doing nothing, or double-subscribed.
+- **Tick order is build → spawner → enemies → towers → projectiles, and it is not arbitrary.**
+  Enemies move first, towers then scan the positions they moved to, and projectiles fly at those
+  same positions; ticking towers first would aim every shot one frame stale. Building leads so a
+  tower added or removed this frame is settled before anything iterates the list.
+  `build.Tick()` takes no `dt` — nothing in it is time-based, and a parameter with no reader is
+  what §2's discipline rejects.
+- **`TickTowers` runs backwards now**, because the list can change during a round. Same cheap
+  insurance the enemy loop already took.
+- **Building is never gated, so §10's allocation budget is broken on purpose.** One `Instantiate`
+  per player tap during what is nominally a wave. It is bounded, recorded in §10, and it repairs
+  itself with no code change when `BuildState` lands and stops calling `build.Tick()` — which is
+  §9's "pausing is free" argument paying off a second time. A `bool buildingAllowed` that nothing
+  sets would have been worse than the honest violation.
 - **The enemy list is ticked backwards**, because a finished enemy is removed as we go. Index
-  loop, no `foreach`, no LINQ (§10).
+  loop, no `foreach`, no LINQ (§10). That loop now lives in `EnemyRegistry`; the ten lines moved
+  rather than multiplied.
+- **Projectile prefabs are collected *before* the factory is built**, so every pool is prewarmed at
+  construction. A pool created lazily on the first shot would allocate its whole prewarm mid-wave.
+- **That collection must union the level's towers with the *catalogue*, and forgetting the second
+  half is silent.** `ProjectileFactory` refuses to build a pool after construction, and `Create` on
+  an unknown prefab logs an error and returns null — so a tower the **player** places whose
+  projectile was never collected fires nothing, with no error at the moment of placement. The
+  level's own towers cover only what was authored; `TowerCatalogue.CollectProjectilePrefabs` covers
+  what can be built. See [tower-factory.md](tower-factory.md).
+- **`Start` refuses to run against a level with no map bounds**, the same shape as the path check
+  and for the same reason: with runtime placement, a level you cannot build on is half a game, and
+  one legible error beats a board that silently rejects every tap.
+- **`OnDestroy` logs every pool, not just the enemy one** — three lines now, and the projectile
+  figures are the ones §2 uses to record that `PROJECTILE_POOL_PREWARM` is oversized.
 - **`Bootstrap` ticks the enemies rather than each `Enemy` owning an `Update`** — recorded as a
   decision in §9. Short form: §9's own vocabulary is `Tick`; a driven tick is callable from an
   EditMode test with an explicit `dt` where `Update` is not callable at all (and there is no
@@ -102,10 +172,11 @@ data, not a global constant, and §2's list does not contain it. It is the field
 - **Spawning repeats forever rather than spawning literally one enemy**, though §13 step 2 says
   "gets one enemy". A repeating spawn is what actually *proves* recycling: `PoolRoot`'s child
   count holds at the prewarm figure while one child toggles active.
-- **Prewarm stays at §2's shipped 64** even though this slice has a handful of enemies alive.
-  §10's guidance is to tune to `PeakActive` after a *full wave*, and there is no wave yet, so
-  retuning now would be tuning to the wrong measurement. `OnDestroy` logs the figure so it can be
-  read after a run.
+- **Prewarm figures are left disagreeing with their measurements on purpose.** The enemy pool
+  runs at 30 against §2's stated 64 and peaks at 5; each projectile pool prewarms 128 and peaks at
+  1. §10's guidance is to tune to `PeakActive` after a *full wave* across all three maps, and
+  there is neither a wave nor a second map yet, so retuning now would be tuning to the wrong
+  measurement. `OnDestroy` logs all three so they can be read after a run.
 
 ## `GameStateMachine` is deliberately absent
 
@@ -117,11 +188,13 @@ becoming the god object.
 
 ## Status
 
-**Implemented, wired, and transitional by design.** It has now run: the `GameConfig` asset, the
-`EnemySoldier` and `Level_01` prefabs and all six serialized references are authored on
-`Gameplay.unity` (renamed from `SampleScene.unity` when §13 closed), and two full runs are
-recorded in §13 — enemies spawning every 2 s, recycling through a pool that never grew past its
-prewarm, and a HUD label counting down from the value `Start` announces.
+**Implemented, wired, and transitional by design.** Three full runs are recorded — two in §13 and
+one in §13.1, the last with towers firing, currency climbing and all three pools holding at their
+prewarm.
+
+**The build slice's three new references are authored**, along with the `EventSystem` and the build
+menu, and the scene has been played since: currency climbed on kills and no pool grew. The one
+thing that session could not do was deliver a tap — see [build-controller.md](build-controller.md).
 
 `enemyDefinition` is wired to `EnemyGreenSoldier`. `EnemyGreySoldier` is authored but **unspawned**,
 because this field is a single reference rather than a list — deliberately, since `WaveRunner`'s
@@ -134,13 +207,21 @@ Each temporary job has a named successor:
 |---|---|
 | Driving the per-frame tick | `GameStateMachine` (§4) |
 | The spawn timer and `spawnIntervalSeconds` | `WaveRunner` + `WaveDefinition` (§5, §7) |
-| Owning `List<Enemy> live` | `WaveRunner` — the same ten lines, inherited |
+| Constructing and ticking `EnemyRegistry` | `WaveRunner` — it owns the registry outright, which is why the registry is a plain class |
+| Configuring the level's towers | `LevelRunner`, which will do it on every swap |
 | Holding the single `level` reference | `LevelRunner`, which instantiates and swaps the three (§4) |
+| Calling `build.Tick()` unconditionally | `BuildState`, which pauses it by not calling it (§9) |
+| Constructing `PlacementRules` | `LevelRunner`, which will build a fresh one per level |
 | Logging `PeakActive` on shutdown | the editor Pool Overlay (§12, §15) |
 
-**Deliberately untested.** Its whole job is wiring an asset, a prefab, two scene components and a
-Canvas together; a test would have to build all four, at which point it is testing Unity's
-serialization. `targetFrameRate`, the spawn cadence, the release loop and the
+**This table gained two rows and lost none**, which is the diagnosis the note at the top of this
+guide asks for. Every job still has a named owner, so the class is not yet an accident — but the
+next slice must actually move some, not add more.
+
+**Deliberately untested**, and more so than before: extracting the tick loop into
+`EnemyRegistry` moved the one piece of real logic it had somewhere testable, leaving wiring and
+ordering. Its whole job is now assembling an asset, a prefab, a level and a Canvas; a test would
+have to build all four, at which point it is testing Unity's serialization. `targetFrameRate`, the spawn cadence, the release loop and the
 `Awake`/`OnEnable`/`Start` ordering are all Play-Mode behaviour, and there is no PlayMode
 assembly (§12). It is certified by running the scene with a clean console — which is what §10
 already nominates as the certification for its allocation budget.

@@ -4,22 +4,29 @@ The pooled enemy, its micro state machine, the path it walks and the data that d
 [ARCHITECTURE.md §5](../ARCHITECTURE.md)'s `Enemy` row plus §4's second state machine. This is
 the system §13's vertical slice exists to prove.
 
+> **This guide is over CLAUDE.md's ~150-line line, and the rule says to say so.** The overrun is
+> the guide's *scope*, not the system's: it covers four types — `Enemy`, its three states,
+> `EnemyPath` and `EnemyDefinition` — because §11 deliberately keeps them in one folder as one
+> system. Splitting `EnemyPath` into its own guide would contradict §11's named trigger for
+> splitting its *file*, which is the first non-enemy consumer of the path and has not happened.
+> The trigger to split this document is that same one.
+
 ## Responsibility
 
-Walk a path, and announce that it reached the end.
+Walk a path, take damage, and announce how it left the board — leaked or killed.
 
 It deliberately does **not**:
 
 - **Place itself, or decide when it dies.** `EnemyFactory` configures it; the driver releases it.
   See [enemy-factory.md](enemy-factory.md).
-- **Carry health.** Nothing can damage an enemy in this slice, so there is no `currentHealth`
-  field. `EnemyDefinition` *does* carry `maxHealth`, and the asymmetry is deliberate — see
-  Gotchas.
-- **Subscribe to anything.** It publishes `EnemyLeaked` and listens to nothing, which is why it
-  has no `OnEnable`/`OnDisable` at all.
+- **Decide what damaged it.** `TakeDamage(int)` takes an amount and nothing else. Which tower or
+  projectile it came from is not modelled, because nothing needs it.
+- **Subscribe to anything.** It publishes and listens to nothing, which is why it has no
+  `OnEnable`/`OnDisable` at all.
 - **Own its own `Update`.** It is ticked by the composition root. §9 records that decision and
   its cost.
-- **Know about towers, waves or phases.** None exist yet.
+- **Know about towers, waves or phases.** [`Tower`](tower.md) finds *it*, through
+  [`EnemyRegistry`](enemy-registry.md); the dependency points one way only.
 
 ## Key types
 
@@ -59,10 +66,12 @@ zero new types, and makes "enemies must not mutate the shared path" structural.
 
 | Direction | What |
 |---|---|
-| Publishes | `EnemyLeaked` (from `EnemyDyingState.Enter`) → [`Economy`](economy.md) |
+| Publishes | `EnemyLeaked` **or** `EnemyKilled` (from `EnemyDyingState.Enter`, one branch each) → [`Economy`](economy.md) |
 | Subscribes | **nothing** |
 | Created by | [`EnemyFactory`](enemy-factory.md), which calls `Configure` in the statement after `pool.Get()` |
-| Ticked and released by | [`Bootstrap`](bootstrap.md), on `IsFinished` |
+| Tracked, ticked and released by | [`EnemyRegistry`](enemy-registry.md), on `IsFinished` |
+| Damaged by | [`Projectile`](projectile.md), directly or through the registry's splash |
+| Targeted by | [`Tower`](tower.md), via `IsTargetable` and `Position` |
 | Pooled by | [`ObjectPool<Enemy>`](object-pool.md) |
 
 Depends on `MobileDemo.Core.Events`, `.Interfaces` (`IGameState`), `.Pooling` (`IPoolable`),
@@ -129,13 +138,30 @@ their own path laid over their own art, so the path is per-level content and
   and `MoveTowards` clamps exactly so `== target` needs no epsilon. The cost is losing one
   frame's movement at a corner, which is invisible. **Named trigger** for the loop version: high
   speeds, or a fast-forward feature.
-- **`maxHealth` and `currencyReward` are authored but unread.** Deliberate, so the asset is
-  authored once and completely and §7's list matches the code. The line *not* crossed is
-  `Enemy.currentHealth`: a data knob a future system will read is a knob, but a field on a live
-  object with no writer reads as working code.
-- **No `Collider2D` on the prefab yet**, because nothing overlap-tests an enemy. When the tower
-  slice adds one, object-pool.md's stale-transform gotcha goes live — which is exactly why
-  "configure in the statement after `Get`" was established now, before it could bite.
+- **`maxHealth` and `currencyReward` now have readers**, so §7's authored-but-unread note is
+  discharged: `Configure` seeds `CurrentHealth` from the first and `EnemyDyingState` pays out the
+  second. `CurrentHealth` is reset in `Configure` and cleared in `OnDespawn` — the pooling reset
+  that `OnDespawn_ThenOnSpawn_ThenConfigure_RestoresFullHealth` pins. A recycled enemy that kept
+  its last life's health would die to a single hit, deep into a wave.
+- **`TakeDamage` is gated on `IsTargetable`, and that gate is doing two jobs.** It is what makes
+  the spawn window a gameplay rule rather than a cosmetic delay — a just-placed enemy cannot be
+  shot. It is *also* what stops a double kill: two projectiles landing in the same frame would
+  otherwise both drive health below zero, both transition to `Dying`, and pay the reward twice for
+  one enemy.
+- **`IsTargetable` is `current != null && current == moving`, and the null check is not
+  redundant.** Before `Initialize` runs, both fields are null and `current == moving` is *true*,
+  so an uninitialized enemy reported itself shootable. Play mode hides this because `Awake` always
+  runs; a pooled instance between `Get()` and `Configure()`, and every EditMode test, does not.
+  Found by a test, not by the run — §13.1 records it.
+- **The death *cause* is stashed on the enemy, not passed to `Enter()`.** `IGameState.Enter` takes
+  no argument, and widening it for one state would cost every other state a parameter it ignores.
+  So `EnterDying(cause)` sets `DeathCause` and then swaps. One state with a branch, rather than
+  two states — both exits are terminal and both end in `MarkFinished`, so only the announcement
+  differs.
+- **Still no `Collider2D` on the prefab**, and the tower slice did *not* add one: targeting is a
+  distance query over `EnemyRegistry`, and splash is the same. Physics would have bought
+  tunnelling bugs and a fixed-timestep dependency for nothing. object-pool.md's stale-transform
+  gotcha therefore stays theoretical a while longer.
 - **`current?.Tick(dt)` uses `?.` safely.** `IGameState` is a plain interface, not a
   `UnityEngine.Object`, so the destroyed-object trap `.editorconfig` holds at `suggestion` does
   not apply here. The surrounding codebase carries the opposite advice, hence the inline comment.
@@ -144,18 +170,24 @@ their own path laid over their own art, so the path is per-level content and
 
 **Implemented, tested and run.** `Prefabs/EnemySoldier.prefab`, both definition assets and
 `Level_01`'s ten waypoints are authored, and enemies have been seen spawning, walking the
-switchback and leaking — recycling through the pool with `InstanceCount` never leaving its
-prewarm of 64 (§13 records the run). 10 EditMode tests in
-[EnemyTests.cs](../../Assets/Tests/EditMode/EnemyTests.cs) cover placement, the spawn-delay
+switchback, and — since §13.1 — dying to tower fire before they reach the end. The EditMode tests
+in [EnemyTests.cs](../../Assets/Tests/EditMode/EnemyTests.cs) cover placement, the spawn-delay
 window, movement rate, the single `EnemyLeaked`, `IsFinished`, the inert `Get`-to-`Configure`
 gap, and the pooling reset — `OnDespawn → OnSpawn → Configure` restarting from waypoint 0, which
-is the one that proves the State pattern is paying for itself.
+is the one that proves the State pattern is paying for itself — plus the health half: damage,
+the kill payout, the clamp at zero, the spawn-window immunity, `IsTargetable` across all four
+states, and health restored across a pool cycle.
 
 `EnemyPath` is deliberately untested: ~15 lines of bake and indexing, and reaching its
 `[SerializeField] Transform[]` needs reflection or `SerializedObject` — a seam bought for trivial
 code, when avoiding exactly that seam for the code that *matters* is why `Configure` takes
 `IReadOnlyList<Vector2>`. Its one realistic failure has a `Debug.LogError` instead.
 
-Pending the tower slice: health and `TakeDamage`, `EnemyKilled` in place of `EnemyLeaked` when
-the cause is a kill (one publish site, so it is a small change), a collider, and a second enemy
-type — which is also the trigger for §10's sprite atlas.
+The tower slice discharged everything this section used to list as pending — health,
+`TakeDamage`, `EnemyKilled` on the kill branch — and it *was* the small change the single publish
+site promised. §10's sprite atlas now exists too.
+
+What is still pending: a second enemy **prefab** (the planned tanks, which cannot share the
+soldier silhouette and therefore need a second pool — see [enemy-factory.md](enemy-factory.md)),
+a hit flash and death effect (PrimeTween, §15), and `EnemyGreySoldier` actually being spawned,
+which waits on `WaveRunner` choosing between definitions.

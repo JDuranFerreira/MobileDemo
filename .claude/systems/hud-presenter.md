@@ -6,18 +6,19 @@ asserted.
 
 ## Responsibility
 
-Render numbers the gameplay layer announces.
+Render the two numbers the gameplay layer announces: lives and currency.
 
 It deliberately does **not**:
 
 - **Read gameplay state.** No reference to `Economy`, no `Update`, no polling. It knows a
-  `LivesChanged` arrived and nothing else. **Its entire `using` block is
+  `LivesChanged` or a `CurrencyChanged` arrived and nothing else. **Its entire `using` block is
   `MobileDemo.Core.Events`, `TMPro`, `UnityEngine`** — that absence is the point, and it is worth
-  reading the file just for it.
-- **Hold the lives count.** The number lives in `Economy`. Giving the HUD its own copy — for
+  reading the file just for it. Adding towers, projectiles and an economy half changed nothing
+  about it.
+- **Hold either count.** The numbers live in `Economy`. Giving the HUD its own copy — for
   instance by reading `GameConfig.StartingLives` to show an opening value — would work and would
-  be wrong: a second source of truth that is right only by coincidence. §8's `LivesChanged` is
-  how the opening value arrives.
+  be wrong: a second source of truth that is right only by coincidence. §8's `LivesChanged` and
+  `CurrencyChanged` are how the opening values arrive.
 - **Own the Canvas Scaler numbers.** Those are scene values; §10 is their home.
 - **Do anything about zero.** Defeat is §4's.
 
@@ -25,7 +26,7 @@ It deliberately does **not**:
 
 | Type | File | Role |
 |---|---|---|
-| `HudPresenter` | [HudPresenter.cs](../../Assets/Scripts/UI/HudPresenter.cs) | One subscription, one `SetText`. |
+| `HudPresenter` | [HudPresenter.cs](../../Assets/Scripts/UI/HudPresenter.cs) | Two subscriptions, two `SetText`s. |
 
 Namespace `MobileDemo.UI`, assembly `MobileDemo.UI`. It sits at the assembly root rather than in
 a subfolder, per §11's tree.
@@ -44,14 +45,15 @@ reference each other.
 | Direction | Event | With |
 |---|---|---|
 | Subscribes | `LivesChanged` | Raised by [`Economy`](economy.md) |
+| Subscribes | `CurrencyChanged` | Raised by the same `Economy` |
 
 Depends on `MobileDemo.Core.Events`, TextMeshPro and `UnityEngine`. Nothing in
 `MobileDemo.Gameplay`.
 
 ## Data
 
-One serialized field, `livesLabel`, assigned in the scene. No ScriptableObject: there is nothing
-to tune here.
+Two serialized fields, `livesLabel` and `currencyLabel`, assigned in the scene. No
+ScriptableObject: there is nothing to tune here.
 
 The scene values it sits on, recorded here because this class deliberately does *not* own them
 (see above) and because §2 is where they come from: the `HUD` root carries a Screen Space – Overlay
@@ -83,21 +85,42 @@ yet — nothing is tappable, and one serving nothing would be decoration.
   verifying this class: reading `livesLabel.text` back is *not* proof it works, because this
   failure mode leaves the text perfectly correct and draws nothing. Check the resolved `font`, or
   take a screenshot.
-- **An unassigned `livesLabel` disables the component with one error** rather than throwing on
-  the first event, matching `Bootstrap`'s stance on its own references.
+- **Both labels are required, and both are reported in one run.** The check does not
+  short-circuit, so a scene missing both says so once rather than twice over two sessions —
+  the same stance `Bootstrap` takes on its five references. A missing label disables the component
+  rather than throwing on the first event.
+- **The currency label's format is `"${0:0}"`.** Same `:0` reasoning as the lives label: `SetText`
+  takes a `float`, so without it the label can start rendering `$105.0`.
 
 ## Status
 
-**Implemented, authored and run** — §13 step 4, and the step that closed that slice. A 32 s play
-session showed the label reading **`Lives 14`** from a starting 20, drawn top-left over the map,
-with `font = LiberationSans SDF` resolved. Both halves of that were checked deliberately: the
-string proves the bus chain, the screenshot proves the glyphs, and the gotcha below is why
-neither on its own would have been enough.
+**Implemented, authored and run.** §13 step 4 closed the first slice with the label reading
+**`Lives 14`** from a starting 20, drawn top-left over the map with `font = LiberationSans SDF`
+resolved — the string proves the bus chain, the screenshot proves the glyphs, and the TMP gotcha
+above is why neither on its own would have been enough.
+
+§13.1 added the currency label, duplicated from the lives label inside the authoring script rather
+than built fresh, so it inherits the font asset, material and anchoring and the two cannot drift
+apart. That session ended on **`Lives 20`** and **`$150`** from a starting `$100` — the first time
+both events in this class have been seen firing in the same run, and the first time the lives
+label held still because the towers were working rather than because nothing was happening.
 
 **Deliberately untested**, and the omission is now load-bearing rather than incidental: §14's
 test assembly does not reference `MobileDemo.UI`, because none of its five targets is a UI class.
 Testing this would need a `Canvas` and a TMP font asset to assert one `SetText`. It is verified by
 running the scene and watching the number go down.
 
-Pending: currency and wave counters (when there is currency and there are waves), the phase
-readout from `PhaseChanged`, and `BuildMenu`/`EndScreen` as separate §11 files.
+**`BuildMenu` joins it on the Canvas with §13.2**, and takes one of this class's expected jobs with
+it: the afford check. §8 used to hand `CurrencyChanged`'s second consumption to `BuildController`;
+it is `BuildMenu` that subscribes, greying out a button whose tower the player cannot afford, while
+`BuildController` asks `Economy` directly. Both UI classes are excluded from tests by the same
+assembly-reference decision.
+
+**One gotcha this class inherited without changing:** with an `EventSystem` in the scene — which
+the build menu requires — `TMP_Text` inherits `Graphic.raycastTarget = true`, so the "Lives" and
+"$" labels would start swallowing world taps that land under them. Both are set to `false`. Nothing
+errors when this is wrong; taps simply stop arriving in one corner of the screen, and the HUD's
+`GraphicRaycaster` had been inert until now precisely because there was no `EventSystem`.
+
+Pending: a wave counter (when there are waves), the phase readout from `PhaseChanged`, and
+`EndScreen` as a separate §11 file.

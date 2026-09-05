@@ -20,6 +20,7 @@ namespace MobileDemo.Tests.EditMode
         Enemy enemy;
         EnemyDefinition definition;
         List<int> leaks;
+        List<EnemyKilled> kills;
 
         [SetUp]
         public void SetUp()
@@ -29,11 +30,14 @@ namespace MobileDemo.Tests.EditMode
             enemy.transform.SetParent(root.transform);
 
             // The field defaults make this a valid, deterministic fixture with no seam --
-            // moveSpeed 1.5, damageOnLeak 1, spawnDelaySeconds 0.15.
+            // moveSpeed 1.5, damageOnLeak 1, spawnDelaySeconds 0.15, maxHealth 3,
+            // currencyReward 5.
             definition = ScriptableObject.CreateInstance<EnemyDefinition>();
 
             leaks = new List<int>();
+            kills = new List<EnemyKilled>();
             EventBus<EnemyLeaked>.Subscribe(OnEnemyLeaked);
+            EventBus<EnemyKilled>.Subscribe(OnEnemyKilled);
         }
 
         [TearDown]
@@ -56,6 +60,8 @@ namespace MobileDemo.Tests.EditMode
         }
 
         void OnEnemyLeaked(EnemyLeaked evt) => leaks.Add(evt.Damage);
+
+        void OnEnemyKilled(EnemyKilled evt) => kills.Add(evt);
 
         static Vector2[] StraightPath() => new[] { new Vector2(0f, 0f), new Vector2(0f, 1f) };
 
@@ -203,6 +209,145 @@ namespace MobileDemo.Tests.EditMode
             // And it walks the whole path again from the start, publishing exactly once more.
             TickToTheEnd();
             Assert.AreEqual(new[] { definition.DamageOnLeak }, leaks);
+        }
+
+        /// <summary>Advances into Moving, which is the only state in which an enemy is shootable.</summary>
+        void ConfigureAndStartMoving()
+        {
+            enemy.Configure(definition, StraightPath());
+            TickPastTheSpawnDelay();
+        }
+
+        [Test]
+        public void Configure_SetsHealthToTheDefinitionsMaximum()
+        {
+            enemy.Configure(definition, StraightPath());
+
+            Assert.AreEqual(definition.MaxHealth, enemy.CurrentHealth);
+        }
+
+        [Test]
+        public void TakeDamage_ReducesHealthWithoutKilling()
+        {
+            ConfigureAndStartMoving();
+
+            enemy.TakeDamage(1);
+
+            Assert.AreEqual(definition.MaxHealth - 1, enemy.CurrentHealth);
+            Assert.IsFalse(enemy.IsFinished);
+            Assert.IsEmpty(kills);
+        }
+
+        [Test]
+        public void TakeDamage_ToZero_PublishesEnemyKilledWithTheReward()
+        {
+            ConfigureAndStartMoving();
+
+            enemy.TakeDamage(definition.MaxHealth);
+
+            Assert.AreEqual(1, kills.Count);
+            Assert.AreEqual(definition.CurrencyReward, kills[0].Reward);
+            Assert.IsTrue(enemy.IsFinished);
+        }
+
+        /// <summary>
+        /// The two exits from <c>EnemyDyingState</c> are mutually exclusive. A kill that also
+        /// leaked would cost the player a life for an enemy they successfully stopped.
+        /// </summary>
+        [Test]
+        public void TakeDamage_ToZero_PublishesNoEnemyLeaked()
+        {
+            ConfigureAndStartMoving();
+
+            enemy.TakeDamage(definition.MaxHealth);
+
+            Assert.IsEmpty(leaks);
+        }
+
+        [Test]
+        public void TakeDamage_BeyondZero_ClampsHealthAtZero()
+        {
+            ConfigureAndStartMoving();
+
+            enemy.TakeDamage(definition.MaxHealth + 99);
+
+            Assert.AreEqual(0, enemy.CurrentHealth);
+        }
+
+        /// <summary>
+        /// Two projectiles landing on the same enemy in the same frame. Without the targetable
+        /// gate in <c>TakeDamage</c> both would drive health below zero and both would transition
+        /// to Dying, paying the reward twice for one enemy.
+        /// </summary>
+        [Test]
+        public void TakeDamage_AfterDying_PublishesNothingFurther()
+        {
+            ConfigureAndStartMoving();
+            enemy.TakeDamage(definition.MaxHealth);
+
+            enemy.TakeDamage(definition.MaxHealth);
+
+            Assert.AreEqual(1, kills.Count);
+        }
+
+        /// <summary>
+        /// The spawn window's second job, and the one that turns it from a cosmetic delay into a
+        /// gameplay rule: a just-placed enemy cannot be shot.
+        /// </summary>
+        [Test]
+        public void TakeDamage_DuringTheSpawnDelay_IsIgnored()
+        {
+            enemy.Configure(definition, StraightPath());
+
+            enemy.TakeDamage(definition.MaxHealth);
+
+            Assert.AreEqual(definition.MaxHealth, enemy.CurrentHealth);
+            Assert.IsFalse(enemy.IsFinished);
+            Assert.IsEmpty(kills);
+        }
+
+        [Test]
+        public void IsTargetable_IsTrueOnlyWhileMoving()
+        {
+            Assert.IsFalse(enemy.IsTargetable, "unconfigured");
+
+            enemy.Configure(definition, StraightPath());
+            Assert.IsFalse(enemy.IsTargetable, "spawning");
+
+            TickPastTheSpawnDelay();
+            Assert.IsTrue(enemy.IsTargetable, "moving");
+
+            TickToTheEnd();
+            Assert.IsFalse(enemy.IsTargetable, "finished");
+        }
+
+        [Test]
+        public void TakeDamage_NonPositiveAmount_ChangesNothing()
+        {
+            ConfigureAndStartMoving();
+
+            enemy.TakeDamage(0);
+            enemy.TakeDamage(-3);
+
+            Assert.AreEqual(definition.MaxHealth, enemy.CurrentHealth);
+        }
+
+        /// <summary>
+        /// The pooling reset for health. A recycled enemy that kept its last life's health would
+        /// die to a single hit, which is the kind of bug that only shows up deep into a wave.
+        /// </summary>
+        [Test]
+        public void OnDespawn_ThenOnSpawn_ThenConfigure_RestoresFullHealth()
+        {
+            ConfigureAndStartMoving();
+            enemy.TakeDamage(definition.MaxHealth);
+            Assert.AreEqual(0, enemy.CurrentHealth, "precondition: it died");
+
+            enemy.OnDespawn();
+            enemy.OnSpawn();
+            enemy.Configure(definition, StraightPath());
+
+            Assert.AreEqual(definition.MaxHealth, enemy.CurrentHealth);
         }
     }
 }

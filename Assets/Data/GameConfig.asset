@@ -14,4 +14,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: MobileDemo.Core::MobileDemo.Core.Config.GameConfig
   targetFrameRate: 60
   startingLives: 20
+  startingCurrency: 100
   enemyPoolPrewarm: 30
+  projectilePoolPrewarm: 128
+  towerScanIntervalSec: 0.1
+  sellRefundFraction: 0.5
+  buildRoadClearance: 0.9
+  buildTowerSpacing: 0.7

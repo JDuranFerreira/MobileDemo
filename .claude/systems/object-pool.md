@@ -4,6 +4,12 @@ The Object Pool implementation from [ARCHITECTURE.md §6](../ARCHITECTURE.md) �
 "mandatory, not decorative", because `Instantiate`/`Destroy` at wave rates is the classic mobile
 GC-spike source.
 
+> **Over CLAUDE.md's ~150-line line, and this is the case where the rule misfires.** `ObjectPool<T>`
+> is 99 lines of code with one responsibility. The guide is long because it is where the project
+> records what the pool deliberately does *not* do — no registry, no overlay, no `Clear`, no sweep
+> — each with a named trigger. That inventory of declined work is the most useful thing here, and
+> shortening the document would mean deleting reasoning rather than simplifying a system.
+
 ## Responsibility
 
 Hand out a configured, active pooled `Component` and take it back, without allocating and without
@@ -138,6 +144,25 @@ holding one field today would be an asset for its own sake.
 - **A negative prewarm clamps; a null prefab throws.** A pool with no prefab cannot exist, so that
   is unrecoverable. A bad tuning number is recoverable, and dying over it would contradict the
   grow-and-warn stance `Get` takes on the same class of mistake.
+
+## Second client
+
+`ObjectPool<Projectile>` arrived with the tower slice and is the first evidence that the generic
+was worth having — until then "one generic pool serves both clients" (§5) was a claim with one
+client. Three things it exercised that `Enemy` never did:
+
+- **`IPoolStats` as a collection.** [`ProjectileFactory`](projectile.md) holds a
+  `IReadOnlyList<IPoolStats>` across several pools, which is the exact use case this interface's
+  own comment says it exists for. Before this, `PeakActive` had one reader and the non-generic
+  face was justified structurally rather than by a caller.
+- **Several pools of the same closed type.** A projectile's tuning lives on its prefab (§7), so
+  each prefab needs its own pool — and pools are therefore keyed by prefab, not by type. Nothing
+  in `ObjectPool<T>` had to change for that; the factory above it does the keying.
+- **A measured prewarm that is far too large.** Both projectile pools peaked at 1 active against
+  a prewarm of 128. §2 records why that is not simply edited down yet.
+
+Still no second `Enemy` pool: the planned tanks cannot share the soldier silhouette and so will
+need one, which is the trigger [enemy-factory.md](enemy-factory.md) already names.
 
 ## Status
 

@@ -1,5 +1,9 @@
 # EnemyFactory
 
+> A second factory now exists — [`ProjectileFactory`](projectile.md) — and it is the case this
+> guide's "a second prefab means a second pool" note predicted. It keeps a pool per prefab because
+> projectile tuning lives on the prefab (§7). Read the two together.
+
 The Factory from [ARCHITECTURE.md §6](../ARCHITECTURE.md) — the seam between *data* (which
 enemy) and *instance* (a live pooled object), and the only type in the project that knows an
 `Enemy` is pooled.
