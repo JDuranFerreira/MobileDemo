@@ -3,7 +3,8 @@
     "rootNamespace": "MobileDemo.Gameplay",
     "references": [
         "MobileDemo.Core",
-        "Unity.InputSystem"
+        "Unity.InputSystem",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
