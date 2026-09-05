@@ -64,7 +64,7 @@ namespace MobileDemo.Gameplay.Enemies
                 waypointIndex++;
                 if (waypointIndex >= enemy.Waypoints.Count)
                 {
-                    enemy.EnterDying();
+                    enemy.EnterDying(EnemyDeathCause.Leaked);
                 }
             }
         }
@@ -74,8 +74,9 @@ namespace MobileDemo.Gameplay.Enemies
         }
     }
 
-    // Named for what the enemy becomes, not the cause. One publish site, so taking a cause and
-    // raising EnemyKilled instead is a small change once towers exist.
+    // Named for what the enemy becomes, not the cause -- which is why towers arriving cost this
+    // state a branch rather than a second state. Both exits are terminal and both end in
+    // MarkFinished, so only the announcement differs.
     sealed class EnemyDyingState : IGameState
     {
         readonly Enemy enemy;
@@ -84,7 +85,18 @@ namespace MobileDemo.Gameplay.Enemies
 
         public void Enter()
         {
-            EventBus<EnemyLeaked>.Publish(new EnemyLeaked(enemy.Definition.DamageOnLeak));
+            if (enemy.DeathCause == EnemyDeathCause.Killed)
+            {
+                // Position, not the tower's -- EnemyKilled anchors a death effect or a floating
+                // reward label, and both belong where the enemy was.
+                EventBus<EnemyKilled>.Publish(
+                    new EnemyKilled(enemy.Definition.CurrencyReward, enemy.Position));
+            }
+            else
+            {
+                EventBus<EnemyLeaked>.Publish(new EnemyLeaked(enemy.Definition.DamageOnLeak));
+            }
+
             enemy.MarkFinished();
         }
 
