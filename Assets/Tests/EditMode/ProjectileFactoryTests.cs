@@ -10,16 +10,23 @@ namespace MobileDemo.Tests.EditMode
     // No `using System;`, for the reason ObjectPoolTests gives. The runtime-built-prefab
     // technique is the one EnemyFactoryTests borrowed from ObjectPoolTests.
     //
-    // What this fixture is really pinning is the pool-per-prefab decision: a projectile's damage
-    // and speed live on its prefab, so one shared pool would hand a fire tower a bullet.
+    // What this fixture pins is the pool-per-*prefab* keying. A projectile type is a
+    // ProjectileDefinition asset and every type can share one prefab, so two definitions naming one
+    // prefab must share its pool -- and two naming different prefabs must not, because a pool hands
+    // back instances of the prefab it was built from.
     public class ProjectileFactoryTests
     {
         const int Prewarm = 3;
+        const int Damage = 1;
 
         GameObject root;
         Transform poolParent;
-        Projectile fire;
-        Projectile bullet;
+        Projectile firePrefab;
+        Projectile bulletPrefab;
+        ProjectileDefinition fire;
+        ProjectileDefinition bullet;
+        readonly System.Collections.Generic.List<ProjectileDefinition> definitions =
+            new System.Collections.Generic.List<ProjectileDefinition>();
         EnemyRegistry registry;
 
         [SetUp]
@@ -29,8 +36,10 @@ namespace MobileDemo.Tests.EditMode
             poolParent = new GameObject("PoolParent").transform;
             poolParent.SetParent(root.transform);
 
-            fire = NewPrefab("Fire", 12);
-            bullet = NewPrefab("Bullet", 1);
+            firePrefab = NewPrefab("Fire");
+            bulletPrefab = NewPrefab("Bullet");
+            fire = NewDefinition(firePrefab);
+            bullet = NewDefinition(bulletPrefab);
             registry = new EnemyRegistry(_ => true);
         }
 
@@ -41,19 +50,37 @@ namespace MobileDemo.Tests.EditMode
             {
                 Object.DestroyImmediate(root);
             }
+
+            for (int i = 0; i < definitions.Count; i++)
+            {
+                if (definitions[i] != null)
+                {
+                    Object.DestroyImmediate(definitions[i]);
+                }
+            }
+
+            definitions.Clear();
         }
 
-        Projectile NewPrefab(string name, int damage)
+        Projectile NewPrefab(string name)
         {
             Projectile prefab = new GameObject(name).AddComponent<Projectile>();
             prefab.transform.SetParent(root.transform);
-            SerializedFields.Set(prefab, "speed", 10f);
-            SerializedFields.Set(prefab, "damage", damage);
             return prefab;
         }
 
-        ProjectileFactory NewFactory(params Projectile[] prefabs) =>
-            new ProjectileFactory(prefabs, Prewarm, poolParent);
+        ProjectileDefinition NewDefinition(Projectile prefab)
+        {
+            ProjectileDefinition definition = ScriptableObject.CreateInstance<ProjectileDefinition>();
+            definition.name = prefab != null ? prefab.name : "NoPrefab";
+            SerializedFields.Set(definition, "speed", 10f);
+            SerializedFields.Set(definition, "prefab", prefab);
+            definitions.Add(definition);
+            return definition;
+        }
+
+        ProjectileFactory NewFactory(params ProjectileDefinition[] withDefinitions) =>
+            new ProjectileFactory(withDefinitions, Prewarm, poolParent);
 
         [Test]
         public void Constructor_CreatesOnePoolPerPrefab()
@@ -68,9 +95,32 @@ namespace MobileDemo.Tests.EditMode
         /// Two towers of the same type share a pool. That is normal, not a configuration error.
         /// </summary>
         [Test]
-        public void Constructor_WithTheSamePrefabTwice_CreatesOnePool()
+        public void Constructor_WithTheSameDefinitionTwice_CreatesOnePool()
         {
             ProjectileFactory factory = NewFactory(fire, fire);
+
+            Assert.AreEqual(1, factory.Stats.Count);
+        }
+
+        /// <summary>
+        /// The shipping case: every projectile type shares one Projectile.prefab, so two different
+        /// definitions must draw from one pool rather than prewarm a second copy of it.
+        /// </summary>
+        [Test]
+        public void Constructor_WithTwoDefinitionsSharingAPrefab_CreatesOnePool()
+        {
+            ProjectileDefinition splash = NewDefinition(firePrefab);
+
+            ProjectileFactory factory = NewFactory(fire, splash);
+
+            Assert.AreEqual(1, factory.Stats.Count);
+            Assert.AreEqual(Prewarm, poolParent.childCount);
+        }
+
+        [Test]
+        public void Constructor_SkipsADefinitionWithNoPrefab()
+        {
+            ProjectileFactory factory = NewFactory(NewDefinition(null), fire);
 
             Assert.AreEqual(1, factory.Stats.Count);
         }
@@ -87,20 +137,21 @@ namespace MobileDemo.Tests.EditMode
         }
 
         [Test]
-        public void Constructor_NullPrefabs_Throws()
+        public void Constructor_NullDefinitions_Throws()
         {
             Assert.Throws<System.ArgumentNullException>(() => new ProjectileFactory(null, Prewarm));
         }
 
         [Test]
-        public void Create_ReturnsAnInstanceOfTheRequestedPrefab()
+        public void Create_ReturnsAnInstanceOfTheDefinitionsPrefab()
         {
             ProjectileFactory factory = NewFactory(fire, bullet);
 
-            Projectile spawned = factory.Create(bullet, Vector2.zero, null, registry);
+            Projectile spawned = factory.Create(bullet, Vector2.zero, null, registry, Damage);
 
             Assert.IsNotNull(spawned);
             Assert.IsTrue(spawned.name.StartsWith("Bullet"), $"got '{spawned.name}'");
+            Assert.AreSame(bullet, spawned.Definition, "Create configures with the definition");
         }
 
         [Test]
@@ -108,7 +159,7 @@ namespace MobileDemo.Tests.EditMode
         {
             ProjectileFactory factory = NewFactory(fire, bullet);
 
-            factory.Create(fire, Vector2.zero, null, registry);
+            factory.Create(fire, Vector2.zero, null, registry, Damage);
 
             Assert.AreEqual(1, factory.Stats[0].ActiveCount, "the fire pool");
             Assert.AreEqual(0, factory.Stats[1].ActiveCount, "the bullet pool is untouched");
@@ -119,33 +170,33 @@ namespace MobileDemo.Tests.EditMode
         {
             ProjectileFactory factory = NewFactory(fire);
 
-            Projectile spawned = factory.Create(fire, new Vector2(3f, 4f), null, registry);
+            Projectile spawned = factory.Create(fire, new Vector2(3f, 4f), null, registry, Damage);
 
             Assert.AreEqual(new Vector2(3f, 4f), (Vector2)spawned.transform.position);
         }
 
         /// <summary>
-        /// A tower wired to a prefab the factory was never told about costs that tower its shots,
-        /// not the whole run — so this logs and returns null rather than throwing.
+        /// A tower wired to a definition the factory was never told about costs that tower its
+        /// shots, not the whole run — so this logs and returns null rather than throwing.
         /// </summary>
         [Test]
-        public void Create_WithAnUnregisteredPrefab_LogsAndReturnsNull()
+        public void Create_WithAnUnregisteredDefinition_LogsAndReturnsNull()
         {
             ProjectileFactory factory = NewFactory(fire);
 
             LogAssert.Expect(LogType.Error, new Regex("has no pool for"));
-            Projectile spawned = factory.Create(bullet, Vector2.zero, null, registry);
+            Projectile spawned = factory.Create(bullet, Vector2.zero, null, registry, Damage);
 
             Assert.IsNull(spawned);
         }
 
         [Test]
-        public void Create_NullPrefab_Throws()
+        public void Create_NullDefinition_Throws()
         {
             ProjectileFactory factory = NewFactory(fire);
 
             Assert.Throws<System.ArgumentNullException>(
-                () => factory.Create(null, Vector2.zero, null, registry));
+                () => factory.Create(null, Vector2.zero, null, registry, Damage));
         }
 
         [Test]
@@ -154,7 +205,7 @@ namespace MobileDemo.Tests.EditMode
             ProjectileFactory factory = NewFactory(fire);
 
             // No target and an aim point it is already standing on, so it lands on its first tick.
-            factory.Create(fire, Vector2.zero, null, registry);
+            factory.Create(fire, Vector2.zero, null, registry, Damage);
             Assert.AreEqual(1, factory.Stats[0].ActiveCount, "precondition: it is in flight");
 
             factory.Tick(0.1f);
@@ -173,7 +224,7 @@ namespace MobileDemo.Tests.EditMode
             enemy.Configure(definition, new[] { new Vector2(50f, 0f), new Vector2(50f, 1000f) });
             enemy.Tick(definition.SpawnDelaySeconds);
 
-            factory.Create(fire, Vector2.zero, enemy, registry);
+            factory.Create(fire, Vector2.zero, enemy, registry, Damage);
             factory.Tick(0.1f);
 
             Assert.AreEqual(1, factory.Stats[0].ActiveCount);
@@ -184,7 +235,7 @@ namespace MobileDemo.Tests.EditMode
         public void Release_AProjectileItNeverCreated_ReturnsFalse()
         {
             ProjectileFactory factory = NewFactory(fire);
-            Projectile foreign = NewPrefab("Foreign", 1);
+            Projectile foreign = NewPrefab("Foreign");
 
             Assert.IsFalse(factory.Release(foreign));
         }
@@ -204,7 +255,7 @@ namespace MobileDemo.Tests.EditMode
 
             for (int i = 0; i < 50; i++)
             {
-                factory.Create(fire, Vector2.zero, null, registry);
+                factory.Create(fire, Vector2.zero, null, registry, Damage);
                 factory.Tick(0.1f);
             }
 

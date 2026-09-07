@@ -10,8 +10,11 @@ put a projectile in the air at its own fire rate.
 
 It deliberately does **not**:
 
-- **Damage anything.** The projectile carries the damage and applies it on impact. A tower that
-  dealt damage directly would make `Projectile` decoration.
+- **Damage anything directly.** It *owns* the damage figure — `TowerDefinition.damage`, the number
+  a player compares when buying — and hands it to the shot. The projectile scales it by its own
+  multiplier and applies it on impact. A tower that called `TakeDamage` itself would make
+  `Projectile` decoration; a projectile that authored the figure put it two assets away from range
+  and fire rate (§7).
 - **Get pooled.** §6 says so explicitly: a handful exist for a whole round, so pooling would add
   lifecycle complexity for zero benefit. Still true now that they are placed at runtime —
   [`TowerFactory`](tower-factory.md) genuinely instantiates, and an undone placement genuinely
@@ -35,7 +38,7 @@ It deliberately does **not**:
 | Type | File | Role |
 |---|---|---|
 | `Tower` | [Tower.cs](../../Assets/Scripts/Gameplay/Towers/Tower.cs) | The component. `Configure(definition, registry, factory, scanInterval)` then a driven `Tick(dt)`. |
-| `TowerDefinition` | [TowerDefinition.cs](../../Assets/Scripts/Gameplay/Towers/TowerDefinition.cs) | `sprite`, `range`, `shotsPerSecond`, `projectilePrefab`, `cost`. |
+| `TowerDefinition` | [TowerDefinition.cs](../../Assets/Scripts/Gameplay/Towers/TowerDefinition.cs) | `sprite`, `range`, `shotsPerSecond`, `damage`, `projectile`, `cost`. |
 
 Namespace `MobileDemo.Gameplay.Towers`, assembly `MobileDemo.Gameplay`.
 
@@ -63,12 +66,17 @@ only as `TowerDefinition` assets, exactly as the green and grey soldiers share
 
 ## Data
 
-`TowerGreen.asset` — range 2.6, 2 shots/s, fires `Projectile_Bullet`, cost 50.
-`TowerRed.asset` — range 2.1, 0.8 shots/s, fires `Projectile_Fire` (splash), cost 75.
-Both are listed in `Data/TowerCatalogue.asset`, which is what makes them buildable — see
+`Data/Towers/TowerGreen.asset` — range 2.6, 2 shots/s, 1 damage, fires `ProjectileBullet`, cost 50.
+`Data/Towers/TowerRed.asset` — range 2.1, 0.8 shots/s, 1 damage, fires `ProjectileFire` (splash),
+cost 75.
+Both are listed in `Data/Towers/TowerCatalogue.asset`, which is what makes them buildable — see
 [tower-factory.md](tower-factory.md) for why that asset exists for a pooling reason first.
 
-**`cost` now has readers** — `BuildController`'s afford check and `SellTowerCommand`'s refund — so
+**`damage` is the newest field**, moved here from the projectile prefab: the projectile keeps a
+`damageMultiplier` that scales it (both ship at 1, so the balance is unchanged). §7 has the
+argument.
+
+**`cost` has readers** — `BuildController`'s afford check and `SellTowerCommand`'s refund — so
 `TowerDefinition` has no authored-but-unread fields left. That vindicates the call
 `EnemyDefinition` made for `maxHealth`: author the asset once and completely, and the reader
 arrives later.
@@ -107,9 +115,10 @@ is that upgrade and sell would compete for the same tap.
   `Configure`. That is worth knowing as a *diagnostic*: a tower visible in the hierarchy but
   invisible on screen was never configured — which is exactly how §13.2 identified four orphan
   tower instances hiding inside `Level_01.prefab`.
-- **A tower placed at runtime can silently never fire.** Its `TowerDefinition.ProjectilePrefab`
-  must have been prewarmed into `ProjectileFactory` at boot, which is `TowerCatalogue`'s job. The
-  failure is not raised here and not at placement — it arrives per shot, from `Create`.
+- **A tower placed at runtime can silently never fire.** Its `TowerDefinition.Projectile` must
+  have been prewarmed into `ProjectileFactory` at boot, which is `TowerCatalogue`'s job. The
+  failure is not raised here and not at placement — it arrives per shot, from `Create`. One shared
+  `Projectile.prefab` makes it unlikely today, not impossible tomorrow.
 
 ## Status
 
@@ -118,11 +127,11 @@ and §13.2 reproduced it from the current repo state — currency climbing `$100
 26 s with `Lives 20` untouched.
 
 **That reproduction was not free, and the reason belongs here.** Both `TowerDefinition` assets were
-found holding pure field defaults — no sprite, no projectile prefab, identical range and cost — so
+found holding pure field defaults — no sprite, no projectile, identical range and cost — so
 `Tower.Fire` returned early and neither tower fired, silently. §13.2 has the cause (an authoring
 script calling `CreateAsset` over an existing path) and the restored values. It is worth knowing as
 a diagnostic: **a tower with no sprite has no definition, and a tower with a definition but no
-projectile prefab is disarmed with nothing logged.**
+projectile is disarmed with nothing logged.**
 
 Placement is no longer hand-authored only: §13.2 added [`BuildController`](build-controller.md), so
 towers can be placed and sold at runtime, and `TowerDefinition.cost` finally has readers. A tower

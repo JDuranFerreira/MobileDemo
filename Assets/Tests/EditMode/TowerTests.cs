@@ -14,6 +14,7 @@ namespace MobileDemo.Tests.EditMode
     public class TowerTests
     {
         const float Range = 5f;
+        const int Damage = 2;
         const float ShotsPerSecond = 2f;
         const float ScanInterval = 0.1f;
         const float ShotInterval = 1f / ShotsPerSecond;
@@ -22,6 +23,7 @@ namespace MobileDemo.Tests.EditMode
         Transform poolParent;
         EnemyDefinition enemyDefinition;
         TowerDefinition towerDefinition;
+        ProjectileDefinition projectileDefinition;
         Projectile projectilePrefab;
         ProjectileFactory projectiles;
         EnemyRegistry registry;
@@ -38,15 +40,18 @@ namespace MobileDemo.Tests.EditMode
 
             projectilePrefab = new GameObject("TestProjectile").AddComponent<Projectile>();
             projectilePrefab.transform.SetParent(root.transform);
-            SerializedFields.Set(projectilePrefab, "speed", 20f);
-            SerializedFields.Set(projectilePrefab, "damage", 1);
+
+            projectileDefinition = ScriptableObject.CreateInstance<ProjectileDefinition>();
+            SerializedFields.Set(projectileDefinition, "speed", 20f);
+            SerializedFields.Set(projectileDefinition, "prefab", projectilePrefab);
 
             towerDefinition = ScriptableObject.CreateInstance<TowerDefinition>();
             SerializedFields.Set(towerDefinition, "range", Range);
             SerializedFields.Set(towerDefinition, "shotsPerSecond", ShotsPerSecond);
-            SerializedFields.Set(towerDefinition, "projectilePrefab", projectilePrefab);
+            SerializedFields.Set(towerDefinition, "damage", Damage);
+            SerializedFields.Set(towerDefinition, "projectile", projectileDefinition);
 
-            projectiles = new ProjectileFactory(new[] { projectilePrefab }, 4, poolParent);
+            projectiles = new ProjectileFactory(new[] { projectileDefinition }, 4, poolParent);
             registry = new EnemyRegistry(_ => true);
 
             tower = new GameObject("Tower").AddComponent<Tower>();
@@ -76,6 +81,11 @@ namespace MobileDemo.Tests.EditMode
             if (towerDefinition != null)
             {
                 Object.DestroyImmediate(towerDefinition);
+            }
+
+            if (projectileDefinition != null)
+            {
+                Object.DestroyImmediate(projectileDefinition);
             }
         }
 
@@ -202,7 +212,8 @@ namespace MobileDemo.Tests.EditMode
 
         /// <summary>
         /// Nearest, not first-found. Asserted through damage rather than a private field: the
-        /// near enemy is the one that must lose health.
+        /// near enemy is the one that must lose health — and it loses the *tower's* damage, which
+        /// is the other half of what this pins since §7 moved that figure here.
         /// </summary>
         [Test]
         public void Tick_WithTwoEnemiesInRange_TargetsTheNearest()
@@ -216,7 +227,7 @@ namespace MobileDemo.Tests.EditMode
                 projectiles.Tick(0.02f);
             }
 
-            Assert.AreEqual(enemyDefinition.MaxHealth - 1, near.CurrentHealth);
+            Assert.AreEqual(enemyDefinition.MaxHealth - Damage, near.CurrentHealth);
             Assert.AreEqual(enemyDefinition.MaxHealth, far.CurrentHealth);
         }
 

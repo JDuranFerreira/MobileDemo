@@ -37,8 +37,7 @@ namespace MobileDemo.Tests.EditMode
         BuildController NewController(TowerCatalogue catalogue) => new BuildController(
             input,
             scaffold.Economy,
-            scaffold.Level,
-            scaffold.Rules,
+            scaffold.Levels,
             scaffold.Towers,
             catalogue,
             BuildScaffold.RefundFraction);
@@ -245,6 +244,66 @@ namespace MobileDemo.Tests.EditMode
 
             Assert.AreEqual(1, scaffold.Level.Towers.Count);
             Assert.AreEqual(1, build.UndoDepth);
+        }
+
+        /// <summary>
+        /// BuildState.Exit() calls this at the phase boundary: once the wave starts, nothing can
+        /// pop the stack, so everything on it is permanent.
+        /// </summary>
+        [Test]
+        public void ClearHistory_EmptiesTheStackSoNothingCanBeUndone()
+        {
+            TapAt(BuildScaffold.LegalSpot);
+            TapAt(BuildScaffold.OtherLegalSpot);
+            Assert.AreEqual(2, build.UndoDepth, "precondition");
+
+            build.ClearHistory();
+
+            Assert.AreEqual(0, build.UndoDepth);
+            Assert.IsFalse(build.Undo(), "an empty stack refuses rather than throwing");
+            Assert.AreEqual(2, scaffold.Level.Towers.Count, "clearing makes permanent, not gone");
+        }
+
+        /// <summary>
+        /// The `is SellTowerCommand` branch, at the level it lives. A sold tower is deactivated
+        /// rather than destroyed so Undo can restore the instance, which leaves its GameObject
+        /// owned by this stack — clearing without discarding leaks one inactive tower per sale.
+        /// </summary>
+        [Test]
+        public void ClearHistory_DestroysTheTowersOfSalesItDiscards()
+        {
+            TapAt(BuildScaffold.LegalSpot);
+            Tower placed = scaffold.Level.Towers[0];
+            TapAt(BuildScaffold.LegalSpot);
+            Assert.IsTrue(placed != null, "precondition: the sale did not destroy it");
+
+            build.ClearHistory();
+
+            Assert.IsTrue(placed == null);
+        }
+
+        [Test]
+        public void ClearHistory_OnAnEmptyStack_DoesNothing()
+        {
+            Assert.DoesNotThrow(() => build.ClearHistory());
+            Assert.AreEqual(0, build.UndoDepth);
+        }
+
+        /// <summary>
+        /// StartWave travels this event because §8 chose one enum over three, but its receiver is
+        /// BuildState. This class must ignore it rather than log or throw about a message
+        /// correctly addressed elsewhere.
+        /// </summary>
+        [Test]
+        public void BuildActionRequested_WithStartWave_IsIgnoredHere()
+        {
+            TapAt(BuildScaffold.LegalSpot);
+
+            EventBus<BuildActionRequested>.Publish(
+                new BuildActionRequested(BuildAction.StartWave));
+
+            Assert.AreEqual(1, build.UndoDepth);
+            Assert.AreSame(scaffold.Green, build.Selected);
         }
     }
 }

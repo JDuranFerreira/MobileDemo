@@ -10,10 +10,11 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: b6005bda3c9adc24a84fb54151cb09e7, type: 3}
-  m_Name: TowerRed
+  m_Name: TowerGreen
   m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Towers.TowerDefinition
-  sprite: {fileID: 6991795282918457499, guid: c27dfb27830a6b94abe96549fd0ae265, type: 3}
-  range: 2.1
-  shotsPerSecond: 0.8
-  projectilePrefab: {fileID: 8182480483098689280, guid: b98a0353309a8f844b5058461148d9d2, type: 3}
-  cost: 75
+  sprite: {fileID: -3406780426092485941, guid: c39b9ea8c1fac354da887f71ff7fbdf2, type: 3}
+  range: 2.6
+  shotsPerSecond: 2
+  damage: 1
+  projectile: {fileID: 11400000, guid: d9c4525d2fd24aad85a75ef9404202d2, type: 2}
+  cost: 50

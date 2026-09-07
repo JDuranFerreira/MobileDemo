@@ -26,7 +26,7 @@ It deliberately does **not**:
 | Type | File | Role |
 |---|---|---|
 | `TowerFactory` | [TowerFactory.cs](../../Assets/Scripts/Gameplay/Towers/TowerFactory.cs) | `Create(definition, position, parent)` and `Configure(tower)`. |
-| `TowerCatalogue` | [TowerCatalogue.cs](../../Assets/Scripts/Gameplay/Towers/TowerCatalogue.cs) | `Buildable`, and `CollectProjectilePrefabs`. |
+| `TowerCatalogue` | [TowerCatalogue.cs](../../Assets/Scripts/Gameplay/Towers/TowerCatalogue.cs) | `Buildable`, and `CollectProjectileDefinitions`. |
 
 Namespace `MobileDemo.Gameplay.Towers`. The catalogue is filed with the data it lists rather than in
 `Build/`, which holds behaviour.
@@ -67,8 +67,8 @@ each) and `Bootstrap` (the projectile-prefab closure).
 
 ## Data
 
-`Data/TowerCatalogue.asset`, holding `TowerRed` then `TowerGreen` — the order they stand in along
-the path, so the menu reads in the same order the board does.
+`Data/Towers/TowerCatalogue.asset`, holding `TowerRed` then `TowerGreen` — the order they stand in
+along the path, so the menu reads in the same order the board does.
 
 Both tower types share one `Tower.prefab` and differ only as `TowerDefinition` data, exactly as the
 green and grey soldiers share `EnemySoldier.prefab`. §7 records the dividing line: a tower's range
@@ -77,13 +77,15 @@ and fire rate are numbers a component reads, so they belong in an asset.
 ## Gotchas
 
 - **The catalogue exists for a *pooling* reason before a UI one, and this is the gotcha most likely
-  to bite.** `ProjectileFactory` is prewarmed once with the prefabs `Bootstrap` collected and
-  refuses to build a pool later; `Create` on an unknown prefab logs an error and returns null. So a
+  to bite.** `ProjectileFactory` is prewarmed once from the definitions `Bootstrap` collected and
+  refuses to build a pool later; `Create` on an unknown one logs an error and returns null. So a
   tower the player *can build* whose projectile was never collected **fires nothing, and nothing
   errors at the moment of placement** — the error arrives later, per shot, from a different class.
-  `Bootstrap.CollectProjectilePrefabs` unions the level's authored towers with
-  `TowerCatalogue.CollectProjectilePrefabs` precisely to close that, and
+  `Bootstrap.CollectProjectileDefinitions` unions the level's authored towers with
+  `TowerCatalogue.CollectProjectileDefinitions` precisely to close that, and
   `PlaceTowerCommandTests.Execute_ThenTick_PutsAProjectileInTheAir` is what catches a regression.
+  Every projectile type sharing one `Projectile.prefab` (§7) means a missed definition still finds
+  a pool today — which narrows the hole without closing it, so the closure stays.
 - **`Configure(tower)` re-passes the tower's own `Definition`.** That is what lets
   `Tower.Configure` have a single contract instead of a null-means-keep rule, and it is why
   `Tower.Definition` needs no setter.
@@ -96,8 +98,8 @@ and fire rate are numbers a component reads, so they belong in an asset.
 - **The catalogue never returns null** from `Buildable`; an unassigned array reads as "nothing
   buildable", which `BuildController` treats as a `Selected` of null and a tap that places nothing.
   [`Level.Towers`](level.md)' precedent.
-- **`CollectProjectilePrefabs` appends rather than replacing**, and de-duplicates, because two tower
-  types sharing a projectile is normal — they share the pool.
+- **`CollectProjectileDefinitions` appends rather than replacing**, and de-duplicates, because two
+  tower types sharing a projectile is normal — they share the pool.
 
 ## Status
 

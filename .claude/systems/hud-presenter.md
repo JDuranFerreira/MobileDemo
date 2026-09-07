@@ -6,27 +6,33 @@ asserted.
 
 ## Responsibility
 
-Render the two numbers the gameplay layer announces: lives and currency.
+Render what the gameplay layer announces: lives, currency, the phase and the waves cleared.
 
 It deliberately does **not**:
 
 - **Read gameplay state.** No reference to `Economy`, no `Update`, no polling. It knows a
   `LivesChanged` or a `CurrencyChanged` arrived and nothing else. **Its entire `using` block is
   `MobileDemo.Core.Events`, `TMPro`, `UnityEngine`** — that absence is the point, and it is worth
-  reading the file just for it. Adding towers, projectiles and an economy half changed nothing
-  about it.
+  reading the file just for it. Adding towers, projectiles, an economy half, a phase machine and a
+  wave runner has changed nothing about it.
 - **Hold either count.** The numbers live in `Economy`. Giving the HUD its own copy — for
   instance by reading `GameConfig.StartingLives` to show an opening value — would work and would
   be wrong: a second source of truth that is right only by coincidence. §8's `LivesChanged` and
   `CurrencyChanged` are how the opening values arrive.
 - **Own the Canvas Scaler numbers.** Those are scene values; §10 is their home.
-- **Do anything about zero.** Defeat is §4's.
+- **Do anything about zero.** Defeat is `GameStateMachine`'s, which subscribes the same
+  `LivesChanged` this class does — two subscribers to one event, neither aware of the other, which
+  is the one-to-many §6 says the bus is for.
+- **Show the end screen.** [`EndScreen`](../../Assets/Scripts/UI/EndScreen.cs) is a separate
+  component subscribing the same `PhaseChanged`, for the same reason.
+- **Count anything.** `WaveCompleted` carries the index, so the label reads it rather than keeping
+  a tally — a counter here would be a second source of truth for a number the event already has.
 
 ## Key types
 
 | Type | File | Role |
 |---|---|---|
-| `HudPresenter` | [HudPresenter.cs](../../Assets/Scripts/UI/HudPresenter.cs) | Two subscriptions, two `SetText`s. |
+| `HudPresenter` | [HudPresenter.cs](../../Assets/Scripts/UI/HudPresenter.cs) | Four subscriptions, four `SetText`s. |
 
 Namespace `MobileDemo.UI`, assembly `MobileDemo.UI`. It sits at the assembly root rather than in
 a subfolder, per §11's tree.
@@ -46,14 +52,24 @@ reference each other.
 |---|---|---|
 | Subscribes | `LivesChanged` | Raised by [`Economy`](economy.md) |
 | Subscribes | `CurrencyChanged` | Raised by the same `Economy` |
+| Subscribes | `PhaseChanged` | Raised by [`GameStateMachine`](game-state-machine.md) |
+| Subscribes | `WaveCompleted` | Raised by [`WaveRunner`](wave-runner.md) |
+
+**`WaveCompleted`'s consumer moved here rather than being added.** §8's table gave it to
+`GameStateMachine`; the machine turned out to hold its runner by construction and poll it, so
+subscribing would have been Observer used to mirror a readable value — the call §13.2 already made
+about `CurrencyChanged` and `BuildController`. A HUD is what one-to-many broadcast was for.
 
 Depends on `MobileDemo.Core.Events`, TextMeshPro and `UnityEngine`. Nothing in
 `MobileDemo.Gameplay`.
 
 ## Data
 
-Two serialized fields, `livesLabel` and `currencyLabel`, assigned in the scene. No
-ScriptableObject: there is nothing to tune here.
+Four serialized fields — `livesLabel`, `currencyLabel`, `phaseLabel` and `waveLabel` — assigned in
+the scene. No ScriptableObject: there is nothing to tune here.
+
+`phaseLabel` and `waveLabel` sit top-right, mirroring the two existing labels top-left. Both are
+authored with `raycastTarget = false`, which is not cosmetic — see Gotchas.
 
 The scene values it sits on, recorded here because this class deliberately does *not* own them
 (see above) and because §2 is where they come from: the `HUD` root carries a Screen Space – Overlay
@@ -85,12 +101,24 @@ yet — nothing is tappable, and one serving nothing would be decoration.
   verifying this class: reading `livesLabel.text` back is *not* proof it works, because this
   failure mode leaves the text perfectly correct and draws nothing. Check the resolved `font`, or
   take a screenshot.
-- **Both labels are required, and both are reported in one run.** The check does not
-  short-circuit, so a scene missing both says so once rather than twice over two sessions —
-  the same stance `Bootstrap` takes on its five references. A missing label disables the component
-  rather than throwing on the first event.
+- **All four labels are required, and all four are reported in one run.** The check does not
+  short-circuit, so a scene missing several says so once rather than over four sessions — the same
+  stance `Bootstrap` takes on its references. A missing label disables the component rather than
+  throwing on the first event.
 - **The currency label's format is `"${0:0}"`.** Same `:0` reasoning as the lives label: `SetText`
   takes a `float`, so without it the label can start rendering `$105.0`.
+- **`raycastTarget = false` on every label, and it is not cosmetic.** `TMP_Text` inherits
+  `Graphic.raycastTarget = true`, so the moment an `EventSystem` exists a label silently swallows
+  the board taps that land under it. §13.2 paid for this once when the build menu brought the
+  `EventSystem` in and the two existing labels started eating placements; the two new labels are
+  authored with it off for the same reason. Nothing errors when this is wrong — taps just stop
+  arriving in one corner of the screen.
+- **The phase label uses a `switch` over `GamePhase`, not `ToString()`.** An enum's `ToString()`
+  allocates a string on every transition, and the enum's names are code identifiers — four
+  literals cost nothing and leave the wording free to differ from the type.
+- **The wave label is seeded in `OnEnable`, unlike the other three.** Lives, currency and phase are
+  all announced from `Bootstrap.Start`; no wave has completed when the round opens, so there is no
+  opening `WaveCompleted` to catch and the label would otherwise render its authored placeholder.
 
 ## Status
 
@@ -122,5 +150,9 @@ the build menu requires — `TMP_Text` inherits `Graphic.raycastTarget = true`, 
 errors when this is wrong; taps simply stop arriving in one corner of the screen, and the HUD's
 `GraphicRaycaster` had been inert until now precisely because there was no `EventSystem`.
 
-Pending: a wave counter (when there are waves), the phase readout from `PhaseChanged`, and
-`EndScreen` as a separate §11 file.
+**Both pending items landed in §13.3.** The wave counter and the phase readout are code, wired and
+seen: the §13.3 session watched the label track `Build`/`Wave` across four waves and two rounds.
+`EndScreen` also landed, as the separate §11 file it was always going to be rather than as fields
+here — it toggles a panel and asks for a restart, which is a different job from rendering numbers.
+
+Nothing on this class is pending.

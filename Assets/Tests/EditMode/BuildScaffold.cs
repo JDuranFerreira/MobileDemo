@@ -45,14 +45,22 @@ namespace MobileDemo.Tests.EditMode
 
         readonly List<EnemyDefinition> enemyDefinitions = new List<EnemyDefinition>();
 
+        // Sprites and textures are assets, not GameObjects, so destroying Root does not take them
+        // with it -- one leaked per level template for the rest of the editor session otherwise
+        // (§14).
+        readonly List<Object> mapAssets = new List<Object>();
+
         public BuildScaffold()
         {
             Root = new GameObject("BuildScaffold");
 
             ProjectilePrefab = new GameObject("TestProjectile").AddComponent<Projectile>();
             ProjectilePrefab.transform.SetParent(Root.transform);
-            SerializedFields.Set(ProjectilePrefab, "speed", 20f);
-            SerializedFields.Set(ProjectilePrefab, "damage", 1);
+
+            ProjectileDefinition = ScriptableObject.CreateInstance<ProjectileDefinition>();
+            ProjectileDefinition.name = "TestProjectileDefinition";
+            SerializedFields.Set(ProjectileDefinition, "speed", 20f);
+            SerializedFields.Set(ProjectileDefinition, "prefab", ProjectilePrefab);
 
             Green = NewDefinition("Green", GreenCost);
             Red = NewDefinition("Red", RedCost);
@@ -63,24 +71,35 @@ namespace MobileDemo.Tests.EditMode
             TowerPrefab = new GameObject("TowerPrefab").AddComponent<Tower>();
             TowerPrefab.transform.SetParent(Root.transform);
 
-            Level = NewLevel();
-
             Economy = new Economy(20, 100);
             Economy.Subscribe();
 
             Registry = new EnemyRegistry(_ => true);
-            Projectiles = new ProjectileFactory(new[] { ProjectilePrefab }, 4, Root.transform);
+            Projectiles = new ProjectileFactory(new[] { ProjectileDefinition }, 4, Root.transform);
             Towers = new TowerFactory(TowerPrefab, Registry, Projectiles, ScanInterval);
-            Rules = new PlacementRules(
-                Road,
-                new Bounds(Vector3.zero, new Vector3(16f, 16f, 0f)),
+
+            // The level is loaded through a LevelRunner rather than used directly, because that is
+            // how the game reaches one: BuildController reads Current and Rules per tap so a swap
+            // moves one field instead of rebuilding the invoker. The template below is authored to
+            // the same geometry the literals above describe -- a 16x16 board and a road along
+            // y = 0 -- so the rules the runner builds are the rules these fixtures used to hand it.
+            Levels = new LevelRunner(
+                new[] { NewLevelTemplate("LevelTemplate", Road) },
+                Towers,
                 RoadClearance,
-                TowerSpacing);
+                TowerSpacing,
+                Root.transform);
+            Levels.Load(0);
         }
 
         public GameObject Root { get; }
 
-        public Level Level { get; }
+        public LevelRunner Levels { get; }
+
+        /// <summary>The live level — the runner's instance, not the template it was cloned from.</summary>
+        public Level Level => Levels.Current;
+
+        public PlacementRules Rules => Levels.Rules;
 
         public Economy Economy { get; }
 
@@ -89,8 +108,6 @@ namespace MobileDemo.Tests.EditMode
         public ProjectileFactory Projectiles { get; }
 
         public TowerFactory Towers { get; }
-
-        public PlacementRules Rules { get; }
 
         public TowerCatalogue Catalogue { get; }
 
@@ -101,6 +118,8 @@ namespace MobileDemo.Tests.EditMode
         public Tower TowerPrefab { get; }
 
         public Projectile ProjectilePrefab { get; }
+
+        public ProjectileDefinition ProjectileDefinition { get; }
 
         /// <summary>Projectiles put in the air, read from the pool rather than a private field.</summary>
         public int ShotsFired => Projectiles.Stats[0].PeakActive;
@@ -118,6 +137,12 @@ namespace MobileDemo.Tests.EditMode
             DestroyAsset(Green);
             DestroyAsset(Red);
             DestroyAsset(Catalogue);
+            for (int i = 0; i < mapAssets.Count; i++)
+            {
+                DestroyAsset(mapAssets[i]);
+            }
+
+            mapAssets.Clear();
 
             // An unparented ScriptableObject otherwise leaks for the whole editor session (§14).
             for (int i = 0; i < enemyDefinitions.Count; i++)
@@ -178,24 +203,55 @@ namespace MobileDemo.Tests.EditMode
             SerializedFields.Set(definition, "cost", cost);
             SerializedFields.Set(definition, "range", 5f);
             SerializedFields.Set(definition, "shotsPerSecond", ShotsPerSecond);
-            SerializedFields.Set(definition, "projectilePrefab", ProjectilePrefab);
+            SerializedFields.Set(definition, "damage", 1);
+            SerializedFields.Set(definition, "projectile", ProjectileDefinition);
             return definition;
         }
 
         /// <summary>
-        /// A Level with a real map SpriteRenderer, because Level.Bounds reads it — though the
-        /// placement rule here is built from an explicit Bounds so the geometry stays literal.
+        /// A level for a <see cref="LevelRunner"/> to clone: a map sprite that gives
+        /// <see cref="Level.Bounds"/> a real extent, and an <see cref="EnemyPath"/> carrying
+        /// <paramref name="road"/> as waypoint transforms so the runner's bake reproduces that
+        /// array exactly.
         /// </summary>
-        Level NewLevel()
+        /// <remarks>
+        /// The sprite is one pixel per unit, which is what makes the bounds arithmetic literal
+        /// rather than a scale factor to remember: a size of 16 is a 16-unit board centred on the
+        /// level's origin.
+        /// </remarks>
+        public Level NewLevelTemplate(string name, Vector2[] road, float size = 16f)
         {
-            GameObject go = new GameObject("Level");
+            GameObject go = new GameObject(name);
             go.transform.SetParent(Root.transform);
+
+            int pixels = Mathf.RoundToInt(size);
+            Texture2D texture = new Texture2D(pixels, pixels);
+            Sprite sprite = Sprite.Create(
+                texture, new Rect(0f, 0f, pixels, pixels), new Vector2(0.5f, 0.5f), 1f);
+            mapAssets.Add(texture);
+            mapAssets.Add(sprite);
 
             SpriteRenderer map = new GameObject("Map").AddComponent<SpriteRenderer>();
             map.transform.SetParent(go.transform);
+            map.sprite = sprite;
+
+            EnemyPath path = new GameObject("Path").AddComponent<EnemyPath>();
+            path.transform.SetParent(go.transform);
+
+            Transform[] waypoints = new Transform[road.Length];
+            for (int i = 0; i < road.Length; i++)
+            {
+                GameObject waypoint = new GameObject($"Waypoint{i:00}");
+                waypoint.transform.SetParent(path.transform);
+                waypoint.transform.position = road[i];
+                waypoints[i] = waypoint.transform;
+            }
+
+            SerializedFields.Set(path, "waypoints", waypoints);
 
             Level created = go.AddComponent<Level>();
             SerializedFields.Set(created, "map", map);
+            SerializedFields.Set(created, "path", path);
             SerializedFields.Set(created, "towers", new Tower[0]);
             return created;
         }

@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace MobileDemo.Tests.EditMode
 {
-    // The catalogue's real job is the projectile-prefab closure, not the menu: ProjectileFactory is
+    // The catalogue's real job is the projectile closure, not the menu: ProjectileFactory is
     // prewarmed once and refuses to build a pool later, so a buildable tower whose projectile was
     // never collected fires nothing, silently. These tests are the cheap half of catching that;
     // PlaceTowerCommandTests.Execute_ThenTick_PutsAProjectileInTheAir is the expensive half.
@@ -14,6 +14,7 @@ namespace MobileDemo.Tests.EditMode
         GameObject root;
         TowerCatalogue catalogue;
         readonly List<TowerDefinition> definitions = new List<TowerDefinition>();
+        readonly List<ProjectileDefinition> projectiles = new List<ProjectileDefinition>();
 
         [SetUp]
         public void SetUp()
@@ -40,23 +41,34 @@ namespace MobileDemo.Tests.EditMode
 
             definitions.Clear();
 
+            for (int i = 0; i < projectiles.Count; i++)
+            {
+                if (projectiles[i] != null)
+                {
+                    Object.DestroyImmediate(projectiles[i]);
+                }
+            }
+
+            projectiles.Clear();
+
             if (catalogue != null)
             {
                 Object.DestroyImmediate(catalogue);
             }
         }
 
-        Projectile NewProjectile(string name)
+        ProjectileDefinition NewProjectile(string name)
         {
-            Projectile projectile = new GameObject(name).AddComponent<Projectile>();
-            projectile.transform.SetParent(root.transform);
+            ProjectileDefinition projectile = ScriptableObject.CreateInstance<ProjectileDefinition>();
+            projectile.name = name;
+            projectiles.Add(projectile);
             return projectile;
         }
 
-        TowerDefinition NewDefinition(Projectile prefab)
+        TowerDefinition NewDefinition(ProjectileDefinition projectile)
         {
             TowerDefinition definition = ScriptableObject.CreateInstance<TowerDefinition>();
-            SerializedFields.Set(definition, "projectilePrefab", prefab);
+            SerializedFields.Set(definition, "projectile", projectile);
             definitions.Add(definition);
             return definition;
         }
@@ -81,15 +93,15 @@ namespace MobileDemo.Tests.EditMode
         }
 
         [Test]
-        public void CollectProjectilePrefabs_IncludesEveryBuildableDefinitionsPrefab()
+        public void CollectProjectileDefinitions_IncludesEveryBuildableDefinitionsProjectile()
         {
-            Projectile bullet = NewProjectile("Bullet");
-            Projectile fire = NewProjectile("Fire");
+            ProjectileDefinition bullet = NewProjectile("Bullet");
+            ProjectileDefinition fire = NewProjectile("Fire");
             SerializedFields.Set(
                 catalogue, "buildable", new[] { NewDefinition(bullet), NewDefinition(fire) });
 
-            List<Projectile> collected = new List<Projectile>();
-            catalogue.CollectProjectilePrefabs(collected);
+            List<ProjectileDefinition> collected = new List<ProjectileDefinition>();
+            catalogue.CollectProjectileDefinitions(collected);
 
             Assert.AreEqual(2, collected.Count);
             Assert.Contains(bullet, collected);
@@ -101,41 +113,41 @@ namespace MobileDemo.Tests.EditMode
         /// here would prewarm a second one for nothing.
         /// </summary>
         [Test]
-        public void CollectProjectilePrefabs_DoesNotDuplicateASharedPrefab()
+        public void CollectProjectileDefinitions_DoesNotDuplicateASharedProjectile()
         {
-            Projectile bullet = NewProjectile("Bullet");
+            ProjectileDefinition bullet = NewProjectile("Bullet");
             SerializedFields.Set(
                 catalogue, "buildable", new[] { NewDefinition(bullet), NewDefinition(bullet) });
 
-            List<Projectile> collected = new List<Projectile>();
-            catalogue.CollectProjectilePrefabs(collected);
+            List<ProjectileDefinition> collected = new List<ProjectileDefinition>();
+            catalogue.CollectProjectileDefinitions(collected);
 
             Assert.AreEqual(1, collected.Count);
         }
 
         [Test]
-        public void CollectProjectilePrefabs_AppendsRatherThanReplacing()
+        public void CollectProjectileDefinitions_AppendsRatherThanReplacing()
         {
-            Projectile existing = NewProjectile("Existing");
-            Projectile bullet = NewProjectile("Bullet");
+            ProjectileDefinition existing = NewProjectile("Existing");
+            ProjectileDefinition bullet = NewProjectile("Bullet");
             SerializedFields.Set(catalogue, "buildable", new[] { NewDefinition(bullet) });
 
-            List<Projectile> collected = new List<Projectile> { existing };
-            catalogue.CollectProjectilePrefabs(collected);
+            List<ProjectileDefinition> collected = new List<ProjectileDefinition> { existing };
+            catalogue.CollectProjectileDefinitions(collected);
 
-            Assert.AreEqual(2, collected.Count, "Bootstrap unions this with the level's own prefabs");
+            Assert.AreEqual(2, collected.Count, "Bootstrap unions this with the level's own towers");
             Assert.Contains(existing, collected);
         }
 
         [Test]
-        public void CollectProjectilePrefabs_SkipsNullEntriesAndNullPrefabs()
+        public void CollectProjectileDefinitions_SkipsNullEntriesAndNullProjectiles()
         {
             SerializedFields.Set(
                 catalogue, "buildable", new[] { null, NewDefinition(null) });
 
-            List<Projectile> collected = new List<Projectile>();
+            List<ProjectileDefinition> collected = new List<ProjectileDefinition>();
 
-            Assert.DoesNotThrow(() => catalogue.CollectProjectilePrefabs(collected));
+            Assert.DoesNotThrow(() => catalogue.CollectProjectileDefinitions(collected));
             Assert.AreEqual(0, collected.Count);
         }
     }

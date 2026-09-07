@@ -33,7 +33,7 @@ namespace MobileDemo.Tests.EditMode
         void OnCurrencyChanged(CurrencyChanged evt) => currencyChanges.Add(evt.Total);
 
         SellTowerCommand NewCommand() => new SellTowerCommand(
-            scaffold.Level, scaffold.Economy, tower, BuildScaffold.RefundFraction);
+            scaffold.Towers, scaffold.Level, scaffold.Economy, tower, BuildScaffold.RefundFraction);
 
         [Test]
         public void Execute_RemovesTheTowerFromTheLevelAndDeactivatesIt()
@@ -120,10 +120,55 @@ namespace MobileDemo.Tests.EditMode
             scaffold.Level.AddTower(bare);
 
             new SellTowerCommand(
-                scaffold.Level, scaffold.Economy, bare, BuildScaffold.RefundFraction).Execute();
+                scaffold.Towers, scaffold.Level, scaffold.Economy, bare,
+                BuildScaffold.RefundFraction).Execute();
 
             Assert.AreEqual(100, scaffold.Economy.Currency);
             Assert.IsEmpty(currencyChanges);
+        }
+
+        /// <summary>
+        /// The other end of the deactivate-don't-destroy rule. A sold tower stays alive so Undo can
+        /// restore the instance, which leaves it owned by the undo stack — so when that stack is
+        /// cleared at the phase boundary, the sale becomes permanent and the object has no owner
+        /// left. §6 named BuildState.Exit() as this trigger before either existed.
+        /// </summary>
+        [Test]
+        public void Discard_AfterExecute_DestroysTheTower()
+        {
+            SellTowerCommand command = NewCommand();
+            command.Execute();
+
+            command.Discard();
+
+            Assert.IsTrue(tower == null, "a discarded sale must not leave its tower behind");
+        }
+
+        /// <summary>
+        /// An undone sale put the tower back on the board, so it belongs to the player again and a
+        /// later stack clear must not destroy it. Without the guard this is a tower that vanishes
+        /// one wave after the player took its sale back.
+        /// </summary>
+        [Test]
+        public void Discard_AfterUndo_LeavesTheTowerAlone()
+        {
+            SellTowerCommand command = NewCommand();
+            command.Execute();
+            command.Undo();
+
+            command.Discard();
+
+            Assert.IsTrue(tower != null, "an undone sale leaves the tower the player's");
+            Assert.AreEqual(1, scaffold.Level.Towers.Count);
+        }
+
+        /// <summary>A sale that never executed has nothing to destroy.</summary>
+        [Test]
+        public void Discard_WithoutExecute_DoesNothing()
+        {
+            NewCommand().Discard();
+
+            Assert.IsTrue(tower != null);
         }
     }
 }

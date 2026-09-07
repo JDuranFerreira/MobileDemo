@@ -54,18 +54,30 @@ is the short form:
 §13's slice wired the first two events end to end. The
 [§8 catalogue](../ARCHITECTURE.md) remains the contract for the rest:
 
-| Event | Raised by | Consumed by | Live? |
-|---|---|---|---|
-| `EnemyLeaked` | [`Enemy`](enemy.md) (`EnemyDyingState.Enter`) | [`Economy`](economy.md); `WaveRunner` planned | **yes** |
-| `LivesChanged` | [`Economy`](economy.md) | [`HudPresenter`](hud-presenter.md); `GameStateMachine` planned | **yes** |
-| `EnemyKilled` | `Enemy` | `Economy`, `WaveRunner` | no publisher — needs towers |
-| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildController` | no publisher — needs spending |
-| `PhaseChanged` | `GameStateMachine` | `HudPresenter`, build UI | no publisher — needs phases |
-| `WaveCompleted` | `WaveRunner` | `GameStateMachine` | no publisher — needs waves |
+| Event | Raised by | Consumed by |
+|---|---|---|
+| `EnemyLeaked` | [`Enemy`](enemy.md) (`EnemyDyingState.Enter`) | [`Economy`](economy.md) |
+| `EnemyKilled` | `Enemy` | `Economy` |
+| `LivesChanged` | [`Economy`](economy.md) | [`HudPresenter`](hud-presenter.md), [`GameStateMachine`](game-state-machine.md) |
+| `CurrencyChanged` | `Economy` | `HudPresenter`, `BuildMenu` |
+| `PhaseChanged` | `GameStateMachine` | `HudPresenter`, `BuildMenu`, `EndScreen` |
+| `WaveCompleted` | [`WaveRunner`](wave-runner.md) | `HudPresenter` |
+| `BuildActionRequested` | `BuildMenu` | [`BuildController`](build-controller.md), `BuildState` |
+| `RestartRequested` | `EndScreen` | [`Bootstrap`](bootstrap.md) |
 
-Two events with two subscribers is also the first live test of the §3 claim: `Enemy` (Gameplay)
-and `HudPresenter` (UI) now communicate across assemblies that cannot reference each other, and
-neither names the other.
+**The Live? column is gone, because as of §13.3 every row would say yes.** It existed while
+`PhaseChanged` and `WaveCompleted` were contract-only, and a column whose every cell reads the same
+is noise. What replaced it is worth more: three of these rows have a *planned* consumer that was
+deleted rather than written — `BuildController` for `CurrencyChanged`, `GameStateMachine` for
+`WaveCompleted`, and `WaveRunner` for the two enemy events — each because the type already holds the
+object it would have been mirroring. See §8.
+
+Two events with two subscribers was the first live test of the §3 claim: `Enemy` (Gameplay) and
+`HudPresenter` (UI) communicate across assemblies that cannot reference each other, and neither
+names the other. **`BuildActionRequested` and `RestartRequested` are the same test in the other
+direction**, which is the one §3 says is easy to get wrong — and `RestartRequested` is the reason
+the assembly rule is about *payloads* rather than about publishers: it is published by UI and lives
+in Core, because it carries nothing that Core cannot name.
 
 Depends on: `System`, `System.Collections.Generic`, and `UnityEngine` for the play-mode reset
 attribute. `GameEvents.cs` additionally uses `UnityEngine.Vector2`. Nothing else — no package, no

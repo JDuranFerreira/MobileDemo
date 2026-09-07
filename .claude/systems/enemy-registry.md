@@ -47,7 +47,7 @@ reference regardless.
 | Direction | With |
 |---|---|
 | Constructed by | [`Bootstrap`](bootstrap.md), with `EnemyFactory.Release` as the release callback |
-| Fed by | `Bootstrap`'s spawn timer — `WaveRunner`'s job later |
+| Fed and ticked by | [`WaveRunner`](wave-runner.md), which spawns into it and drives its tick |
 | Ticked by | `Bootstrap`, first each frame, before towers aim |
 | Read by | [`Tower`](tower.md) (`FindNearest`), [`Projectile`](projectile.md) (`DamageWithin`) |
 | Calls | `Enemy.Tick`, `Enemy.TakeDamage`, and the release callback |
@@ -69,8 +69,13 @@ None. Range and damage arrive as arguments from whoever is asking.
 - **Both loops skip non-targetable enemies**, which is what keeps spawning and dying enemies out
   of tower target selection and out of splash.
 - **`Tick` iterates backwards**, because a finished enemy is removed as it goes. These are
-  literally the ten lines [bootstrap.md](bootstrap.md) said `WaveRunner` would inherit; keeping it
-  a plain class is what lets `WaveRunner` own it outright rather than reimplement it.
+  literally the ten lines [bootstrap.md](bootstrap.md) said `WaveRunner` would inherit, and §13.3
+  moved them there — keeping this a plain class is what made that a handover rather than a rewrite.
+
+  **The word "outright" in that prediction was wrong, and the correction is the interesting part.**
+  `WaveRunner` ticks this object but does not *construct* it: `Tower` and `Projectile` both hold
+  the registry and are wired in `Bootstrap.Awake`, long before any wave exists, so it has to
+  outlive every wave. What moved was the loop, not the ownership.
 - **Nothing removes an enemy except `Tick`.** `TakeDamage` can finish one, but it stays in the
   list until the next tick sweeps it. Callers must therefore tolerate a finished enemy appearing
   in `Active` for up to one frame — which is why both loops re-check `IsTargetable` rather than
@@ -78,7 +83,13 @@ None. Range and damage arrive as arguments from whoever is asking.
 
 ## Status
 
-**Implemented.** Covered indirectly by `TowerTests` and `ProjectileTests`, which drive it as the
-fixture for every targeting and splash assertion. It has no fixture of its own, deliberately: its
-behaviour is only meaningful through a caller, and testing `Add` then `Active.Count` would assert
-`List<T>`.
+**Implemented, and it now has three callers plus an owner of its tick.** Covered indirectly by
+`TowerTests` and `ProjectileTests`, which drive it as the fixture for every targeting and splash
+assertion, and by `WaveRunnerTests`, which is the first fixture that cares whether a finished enemy
+is actually *released* — the half of `Tick` the other two ignore. It still has no fixture of its
+own, deliberately: its behaviour is only meaningful through a caller, and testing `Add` then
+`Active.Count` would assert `List<T>`.
+
+**`Active.Count` gained a reader with §13.3** — `WaveRunner.IsCleared` is "everything spawned and
+nothing alive" — and that needed no new member here, which is the payoff of `Active` being an
+`IReadOnlyList<Enemy>` rather than a bespoke query surface.
