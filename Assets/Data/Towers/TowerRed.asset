@@ -15,6 +15,6 @@ MonoBehaviour:
   sprite: {fileID: 6991795282918457499, guid: c27dfb27830a6b94abe96549fd0ae265, type: 3}
   range: 2.1
   shotsPerSecond: 0.8
-  damage: 1
+  damage: 2
   projectile: {fileID: 11400000, guid: 4638010f65524a518c513a6a294ad768, type: 2}
   cost: 75

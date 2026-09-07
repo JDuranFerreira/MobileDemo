@@ -15,5 +15,5 @@ MonoBehaviour:
   sprite: {fileID: -7845517406566146729, guid: f1d98a9b987c9074ab56e00cea24b15f, type: 3}
   speed: 6
   damageMultiplier: 1
-  impactRadius: 0.8
+  impactRadius: 1
   prefab: {fileID: 8374619283746192837, guid: 1bb89c5ba7d54056bd10946ca1d5717e, type: 3}

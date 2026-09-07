@@ -91,8 +91,10 @@ no seam. The tests assert **relatively** against those properties, so retuning t
 break them.
 
 `EnemyPath` holds a serialized `Transform[]`, not "my children are my waypoints" — the implicit
-version is a contract that one decorative child silently breaks, and §12's `PathEditor` needs an
-explicit array to edit anyway.
+version is a contract that one decorative child silently breaks, and `PathEditor` needs an explicit
+array to edit anyway. **That second clause was written speculatively and turned out to be the
+load-bearing one:** the tool renames children to match their index, so the names track the array
+rather than the array tracking the names — see [path-editor.md](path-editor.md).
 
 **`EnemyPath` lives inside a level prefab, not loose in the scene.** §1's three maps each carry
 their own path laid over their own art, so the path is per-level content and
@@ -123,10 +125,17 @@ their own path laid over their own art, so the path is per-level content and
 - **Never `Destroy` an enemy — `Release` it.** There is no `Destroy` call in this system at all;
   `IsFinished` plus the driver's release loop is the only exit path.
 - **The path bake is a stale cache.** Moving a waypoint during Play does not affect enemies
-  already walking. Acceptable because waypoints are authored, not animated. **Named trigger:**
-  §12's `PathEditor` must call `EnemyPath.Bake()` after moving a handle. (Baking is for the
+  already walking. Acceptable because waypoints are authored, not animated. (Baking is for the
   decoupling that keeps `Enemy` testable, *not* for a measured perf win — 64 `Transform` reads a
   frame would not have justified it alone.)
+
+  **That named trigger has fired.** It said "`PathEditor` must call `EnemyPath.Bake()` after moving
+  a handle", and [path-editor.md](path-editor.md) does exactly that — but the tool found something
+  the trigger did not anticipate: the call has to be **guarded**, not unconditional. A path being
+  briefly invalid is the normal state of one being authored, and `Bake` logs an error and empties
+  itself under two waypoints, so an unguarded re-bake would spam the console during an edit and
+  throw outright on an empty array slot. The stale cache is the *correct* state to leave behind
+  mid-edit.
 - **A path needs at least two waypoints, and that is enforced at the edges, not re-checked in
   the tick.** `EnemyPath.Bake` logs a `Debug.LogError` and bakes empty; `Bootstrap.Start` then
   refuses to spawn, which is what stops one legible message becoming an
@@ -183,11 +192,22 @@ states, and health restored across a pool cycle.
 code, when avoiding exactly that seam for the code that *matters* is why `Configure` takes
 `IReadOnlyList<Vector2>`. Its one realistic failure has a `Debug.LogError` instead.
 
+**That decision stands, and §13.5 changed what it costs rather than reversing it.** `Bake`'s
+minimum-count guard checks the array's *length*, not its entries, so a filled array holding one
+empty slot passes the guard and then throws a `NullReferenceException` — a second realistic failure
+with neither a test nor a log behind it. It is now caught where it is actually created, in
+[path-editor.md](path-editor.md)'s inspector, rather than by a fixture reaching into a private
+field. Catching an authoring mistake at authoring time beats asserting it at test time.
+
 The tower slice discharged everything this section used to list as pending — health,
 `TakeDamage`, `EnemyKilled` on the kill branch — and it *was* the small change the single publish
 site promised. §10's sprite atlas now exists too.
 
 What is still pending: a second enemy **prefab** (the planned tanks, which cannot share the
 soldier silhouette and therefore need a second pool — see [enemy-factory.md](enemy-factory.md)),
-a hit flash and death effect (PrimeTween, §15), and `EnemyGreySoldier` actually being spawned,
-which waits on `WaveRunner` choosing between definitions.
+and a hit flash and death effect (PrimeTween, §15).
+
+`EnemyGreySoldier` was the third item here and it has been spawned since §13.3. **§13.5 made it the
+map-3 majority** — waves 9 to 12 are more grey than green, which is the first time this definition
+carries a map rather than garnishing one. Its `damageOnLeak = 2` is why map 3 is the only map that
+has ever cost the player a life in a winning run.

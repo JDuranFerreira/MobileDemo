@@ -209,12 +209,15 @@ something the game does twice per run.
   would have given for free — the pool cannot supply that list without becoming a registry.
 - **`Start` refuses a level with no waves**, the third member of the path/bounds family and new
   with the phase machine: without one the round would open in a build phase it could never leave.
-- **Prewarm figures are still left disagreeing with their measurements, and half the trigger has
-  now fired.** §13.3 measured `PeakActive=12` for the enemy pool against a prewarm of 30, and 1 for
-  each projectile pool against 128 — the first numbers taken under a *real* wave rather than a
-  fixed-interval stand-in. §10's guidance is to tune after a full run across all three maps, and
-  there is still one map, so retuning now would trade one wrong measurement for another.
-  `OnDestroy` logs all three.
+- **Prewarm figures were left disagreeing with their measurements for three slices, and §13.5
+  closed both.** §13.3 measured `PeakActive=12` for the enemy pool against a prewarm of 30, and 1
+  for each projectile pool against 128 — the first numbers taken under a *real* wave rather than a
+  fixed-interval stand-in, and not enough to retune on, because §10's guidance is to tune after a
+  full run across all three maps and there was still one map. Twelve authored waves across three
+  maps finally supplied it: `enemyPoolPrewarm` stays **30** against a peak of 15–16, and
+  `projectilePoolPrewarm` drops **128 → 8** against a peak of 3. `OnDestroy` logging all pools is
+  what made every one of those measurements readable — the one job this class has that exists purely
+  for tuning.
 
 ## `GameStateMachine` arrived, and this section is kept rather than deleted
 

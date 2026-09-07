@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8bfe1070070edf24eb273ce0ff6f8346, type: 3}
+  m_Name: Wave12
+  m_EditorClassIdentifier: MobileDemo.Gameplay::MobileDemo.Gameplay.Waves.WaveDefinition
+  groups:
+  - enemy: {fileID: 11400000, guid: 535d6e934c560684b84065aa0842c4b8, type: 2}
+    count: 10
+    spawnInterval: 0.5
+  - enemy: {fileID: 11400000, guid: d476f2391e1989745a4a95d626555640, type: 2}
+    count: 14
+    spawnInterval: 0.7

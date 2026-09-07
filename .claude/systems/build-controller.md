@@ -142,6 +142,26 @@ it. §13.2 records the full diagnosis. The unproven link is one line inside
 [`PointerInputService`](input-service.md), not in this class — but it does mean nobody has yet seen
 a tower appear under a finger.
 
+**§13.5 exercised everything below that one line, at length, and for the first time as a player
+rather than as a fixture.** The session driver swapped a tap queue in for `IInputService` and drove
+this class through a whole run: two sells in the opening build phase of the defeat round, then up to
+six placements per build phase across twelve waves and three maps in the winning round — every one
+of them going through `FindTowerAt`, `IsLegal`, the afford check and a real `ICommand`. Three things
+that produced which the unit tests could not:
+
+- **A sale funded nothing and a refund arrived on screen**: selling both authored towers moved
+  currency `100 → 162`, which is `SELL_REFUND_FRACTION` and the `floor` in `SellTowerCommand`
+  observed on a live board rather than asserted.
+- **Placement survives a level swap.** The player's towers die with their level (they are its
+  children), so each map is rebuilt from carried-over currency — twelve build phases, four of them
+  immediately after a swap, with no stale `PlacementRules` and no dangling tower.
+- **`ClearHistory` ran twenty-four times with a clean console.** Every build phase ends by clearing
+  a stack that may hold deactivated sold towers, and no `MissingReferenceException` appeared across
+  two rounds and a restart — the failure this class is most likely to produce.
+
+The gap is therefore narrower than "unproven on screen" suggests, and no smaller: everything from
+the interface down is exercised, and the device read above it still is not.
+
 | Missing | Trigger |
 |---|---|
 | `UpgradeTowerCommand` | a per-tower UI, so upgrade and sell stop competing for one tap (§7) |

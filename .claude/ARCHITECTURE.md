@@ -51,8 +51,8 @@ TARGET_FRAME_RATE         = 60
 STARTING_CURRENCY         = 100
 STARTING_LIVES            = 20
 TOWER_SCAN_INTERVAL_SEC   = 0.1           (see §9 Polling)
-ENEMY_POOL_PREWARM        = 64
-PROJECTILE_POOL_PREWARM   = 128
+ENEMY_POOL_PREWARM        = 30            (measured, §13.5)
+PROJECTILE_POOL_PREWARM   = 8             (measured, §13.5)
 SELL_REFUND_FRACTION      = 0.5           (see §7 — a run rule, not per tower)
 BUILD_ROAD_CLEARANCE      = 0.9           (see §6 PlacementRules)
 BUILD_TOWER_SPACING       = 0.7
@@ -94,7 +94,31 @@ the current one. Three levels therefore strengthens this field's place on `GameC
 practical consequence for tuning is that `PeakActive` (§10) has to be read after a full run
 across all three, not after map 1.
 
-**§13.4 fired the whole trigger, and the numbers are recorded here rather than acted on.** The
+**§13.5 closed both figures, and the interesting part is that only one of them moved.** The
+divergence below ran for four slices; this is where it ends, so the record of it is kept and the
+resolution added rather than the history being deleted.
+
+- **`PROJECTILE_POOL_PREWARM` is now 8**, in the asset and in `GameConfig.cs`'s initialiser. A
+  twelve-wave run of all three maps measured `PeakActive=3`, so 8 is a shade over twice the
+  observed peak where 128 was forty times it. That is the number §13.4 already said the evidence
+  supported; what this slice added was a *harder* measurement — more towers on the board, firing
+  for longer — and the answer did not change.
+- **`ENEMY_POOL_PREWARM` is now 30, which is the number that was already running.** The asset has
+  said 30 since §13, this section said 64, and the honest resolution was to correct the *document*
+  rather than the data: the same twelve-wave run measured `PeakActive=15` and `16` on two
+  consecutive runs, so 30 is holding with roughly twice the headroom it needs and 64 was never
+  anything but an opening guess. Editing the asset up to match a guess would have been the wrong
+  half of the disagreement to fix.
+- **Neither retune was blind, and neither grew.** Both runs report `InstanceCount` equal to
+  `Prewarm` with no growth warning, which is what makes the smaller projectile pool a measurement
+  rather than a gamble. §6's growth-on-exhaustion is why this direction is safe to take at all: a
+  prewarm guessed low costs one frame's `Instantiate` and one console line, not a missing enemy.
+
+What made this settleable was harder wave data, not more patience. Twelve authored waves with
+grey-majority pressure on map 3 is the worst load the shipping game can present, so a peak measured
+under it is a peak the constant has to cover.
+
+**§13.4 fired the whole trigger, and the numbers were recorded rather than acted on.** The
 first full run across all three maps measured `PeakActive=16` for the enemy pool against a prewarm
 of 30, and `PeakActive=2` for the single projectile pool against 128 — with no growth and no warning
 from either, twice in a row. So the enemy figure is holding with room to spare and `30` is defensible
@@ -112,9 +136,9 @@ would predict. Neither figure is retuned, because the trigger this section wrote
 across *all three* maps and there is still one. Trading a stand-in's wrong measurement for one
 map's wrong measurement is not progress; the divergence stays open, now with better numbers in it.
 
-**The number above and the number in the asset have drifted apart, and the asset is the one that
-runs.** `Data/GameConfig.asset` currently carries `enemyPoolPrewarm: 30`, not the 64 this section
-names; §13's HUD run measured `PeakActive=9, InstanceCount=30, Prewarm=30`, so 30 is holding with
+**The number above and the number in the asset had drifted apart, and the asset was the one that
+ran** — closed in the §13.5 entry at the top of this list, in the asset's favour.
+`Data/GameConfig.asset` carried `enemyPoolPrewarm: 30`, not the 64 this section used to name; §13's HUD run measured `PeakActive=9, InstanceCount=30, Prewarm=30`, so 30 is holding with
 room to spare and nothing has grown. That does **not** settle which figure is right, because of
 the paragraph directly above: 9 is map 1's peak, and the constant has to cover the worst of three
 maps under a real `WaveRunner`, neither of which exists yet. Recorded as an open divergence rather
@@ -126,7 +150,10 @@ The one still deliberately absent:
 - `REFERENCE_RESOLUTION` — configured on the scene's `CanvasScaler`, which is where Unity reads
   it. A copy on the asset would be a second source of truth that nothing consults.
 
-**`PROJECTILE_POOL_PREWARM` is now measurably wrong, and is recorded rather than corrected.** The
+**`PROJECTILE_POOL_PREWARM` was measurably wrong for three slices, and was recorded rather than
+corrected** — closed in §13.5's entry above, at 8. The reasoning it was left open for is kept
+because the shape of it is the point: a measurement on one map with two hand-placed towers could
+not settle a constant that has to cover three maps under a real wave sequence. The
 tower slice's play session logged `PeakActive=1` for *both* projectile pools against a prewarm of
 128 — so 256 GameObjects are prewarmed to hold, at peak, two. The 128 came from this section's
 "a basic tower fires ~10×/sec" (§6); the authored towers fire 2×/s and 0.8×/s, and a projectile's
@@ -334,11 +361,18 @@ cannot infer:
 | `Level` | Owns one map's path and its wave sequence. The unit that gets swapped | **none** — a prefab-root component, not an asset (see §7) |
 | `LevelRunner` | Instantiates the current map, destroys the outgoing one, and owns what is derived from it: the placement rules and the baked path | **none** — the third plain class where a service was tempting (§6) |
 | `Bootstrap` | Composition root: builds the pools, factories, economy, wave runner and phase machine from `GameConfig`, sets the frame rate, ticks the machine, reloads the scene on restart | **none** — deliberately not a Service Locator or DI container (§15 declines both) |
+| `PathEditor` | Authoring a map's road: scene handles, numbered nodes, insert/remove, and the two silent failure modes the runtime does not check | **none** — a custom inspector. The only editor-only row here (§13.5) |
 
 **This table was a design, and as of §13.4 it is an inventory.** `LevelRunner` was the last
 name-only row and it has code; every event in §8 has had both ends since §13.3. That is worth
 stating plainly because it is the point at which the document stops describing intentions: from here
 a row that is wrong is a bug in the code or in this table, not a plan not yet reached.
+
+**The `PathEditor` row is the first one added to a finished inventory, and it is deliberately the
+odd one out** — every other row is runtime code in `MobileDemo.Core`, `.Gameplay` or `.UI`, and this
+one is editor-only and excluded from player builds (§11). It is here rather than left out because
+CLAUDE.md ties each row to a guide, and a tool the next author has to use deserves the same
+treatment as one the game runs. The rule it does *not* break: nothing above it may reference it.
 
 `Bootstrap` is last in the table because it is the only row that is *meant* to shrink — and
 **§13.2 grew it instead**, which is worth saying rather than leaving to be noticed. It gained three
@@ -684,8 +718,13 @@ one reason: see "Why a projectile's damage is the tower's number" below.
 
 **`WaveDefinition` has code as of §13.3, and the shape this document has described since the first
 draft survived contact unchanged**: an ordered list of `{ EnemyDefinition, count, spawnInterval }`
-groups, with two types in one wave being two groups rather than a field on either. Four assets are
-authored, `Data/Wave01..Wave04.asset`, ramping count and tightening interval.
+groups, with two types in one wave being two groups rather than a field on either.
+
+**Twelve assets are authored as of §13.5, `Data/Waves/Wave01..Wave12.asset` — four per map.** The
+first four are map 1's original tutorial curve, untouched: green only, with grey introduced at
+wave 3. Map 2 opens with grey; map 3 is grey-majority, and intervals tighten monotonically across
+all twelve. `Level.waves` was per level from the day it was written (see its note below), so this
+cost no code at all — which is the claim that field was making, now collected on.
 
 `SpawnGroup` is a `struct` rather than a `[Serializable]` class so that reading the current group
 allocates nothing on the spawn path (§10), and it carries a public constructor — not a test-shaped
@@ -1157,14 +1196,15 @@ Assets/
     UI/             (MobileDemo.UI.asmdef)
       HudPresenter.cs, BuildMenu.cs, EndScreen.cs
     Editor/         (MobileDemo.Editor.asmdef — Editor platform only)
-      PathEditor.cs, PoolOverlay.cs        (both planned — §12)
+      PathEditor.cs                        (§13.5 — the first file that ships from here)
+      PoolOverlay.cs                       (still planned — §12)
   Tests/
     EditMode/       (MobileDemo.Tests.EditMode.asmdef — see §14)
   Data/             GameConfig.asset, and one folder per family of definitions:
     Enemies/          EnemyGreenSoldier, EnemyGreySoldier
     Towers/           TowerGreen, TowerRed, TowerCatalogue
     Projectiles/      ProjectileBullet, ProjectileFire
-    Waves/            Wave01..Wave04
+    Waves/            Wave01..Wave12       (four per map — §13.5)
   Art/              MobileDemo.spriteatlasv2  (§10 — Environment excluded)
     Sprites/Environment/   the three §1 maps: variant1..3
   Prefabs/          EnemySoldier.prefab, Tower.prefab, Projectile.prefab,
@@ -1200,12 +1240,17 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
 ### Rules this layout does keep
 
 - **`Editor/` is a reserved name, not a stylistic choice.** Unity excludes the contents of any
-  folder called `Editor` from player builds. The §15 tooling (`PathEditor`, and the Pool Overlay
-  that would read `IPoolStats` — both still unwritten, §12) references `UnityEditor`, so without
-  this folder — and an assembly constrained to the Editor platform — the Android/iOS build fails
-  to compile. The dependency is strictly one-way: editor code may reference runtime code, never
-  the reverse. The assembly exists ahead of its first file precisely so that stays true by
-  construction.
+  folder called `Editor` from player builds. The §15 tooling (`PathEditor`, written in §13.5, and
+  the Pool Overlay that would read `IPoolStats` — still unwritten, §12) references `UnityEditor`,
+  so without this folder — and an assembly constrained to the Editor platform — the Android/iOS
+  build fails to compile. The dependency is strictly one-way: editor code may reference runtime
+  code, never the reverse. The assembly exists ahead of its first file precisely so that stays
+  true by construction.
+
+  **Five slices of holding that assembly empty paid off in §13.5 by costing nothing.**
+  `PathEditor.cs` names `MobileDemo.Gameplay.Enemies.EnemyPath` and `UnityEditor` in the same file
+  and needed no asmdef change, no reference added and no folder moved — which is the whole return
+  on creating the assembly before there was a file to put in it.
 - **No `Resources/`.** It inflates build size unconditionally and offers no async loading.
   Every ScriptableObject is referenced directly per §7, so nothing here needs it.
 - **Type folders stop at the top level.** No `Art/Textures/` or `Art/Materials/` nesting — the
@@ -1280,8 +1325,8 @@ stays flat. Noted here so the omission reads as "knew the convention and decline
 
 **Status:** every `.asmdef` exists — `Core`, `Gameplay`, `UI`, `Editor`, `Tests/EditMode` — so the
 §3 dependency graph has been enforced by the compiler from the first line of code rather than
-retrofitted later, when untangling it would have meant moving files. Four of the five now hold
-code; `Editor` is still an empty shell, waiting on `PathEditor` and the Pool Overlay (§12).
+retrofitted later, when untangling it would have meant moving files. **All five now hold code**, as of §13.5's
+`PathEditor.cs` — the Pool Overlay (§12) is what `Editor` is still missing, not a first file.
 
 **§13.2 is the evidence that this was worth doing early.** A whole input layer, a whole command
 layer, a build UI and traffic in the previously-unused UI→Gameplay direction all landed inside the
@@ -1293,7 +1338,8 @@ Leaf folders appear as their code does. **With code:** `Core/Events`, `Core/Pool
 `Core/Config`, `Core/Interfaces`, `Gameplay/Enemies`, `Gameplay/Economy`, `Gameplay/Levels`,
 `Gameplay/Towers`, `Gameplay/Build`, `Gameplay/Input`, `Gameplay/Phases`, `Gameplay/Waves`,
 `Gameplay/` root (`Bootstrap.cs`), `UI/` root (`HudPresenter.cs`, `BuildMenu.cs`, `EndScreen.cs`),
-`Tests/EditMode`. **Still only a name in this table:** `Editor/`.
+`Tests/EditMode`, `Editor/` (`PathEditor.cs`). **Nothing in this table is only a name any more** —
+`Editor/` was the last one, and §13.5 filled it.
 
 **`Phases/` splits one file per state, and `EnemyStates.cs` still does not — the asymmetry this
 table predicted, now with both halves built.** The rule given was that the round's states are
@@ -1302,16 +1348,36 @@ table predicted, now with both halves built.** The rule given was that the round
 because the reason is the spine, not the line count — a reader looking for what victory does should
 find a file called `VictoryState.cs`, including when the answer is "nothing yet, and here is why".
 
-**`Editor/` is still empty, and that is now a deliberate re-decision rather than inertia.** Each
-slice's assets have been authored by a throwaway editor class run with `Unity.exe -executeMethod`
+**`Editor/` is no longer empty, and §13.5 is where that changed — without changing the rule below.**
+`PathEditor.cs` ships; the three classes that authored and drove that slice
+(`SliceSixAuthoring`, `SliceSixSession`, `SliceSixPathCheck`) were deleted the moment they had run,
+which is the sixth time this has happened. So the distinction this section has always drawn is now
+visible in one folder rather than argued for in prose: scaffolding is deleted, tools stay.
+
+What decided `PathEditor` was not "the assembly looks empty". It was twelve authored waves across
+three maps making path work recurring rather than one-off, plus two failure modes the runtime is
+deliberately silent about — a null array entry that throws on the next bake, and a duplicated
+waypoint that shrinks the road's build clearance with nothing logged. A tool that only drew handles
+would have been decoration; catching those is a job.
+
+**Each** slice's assets have been authored by a throwaway editor class run with `Unity.exe -executeMethod`
 and deleted once it had run. §13.4 added two of them and deleted both: `SliceFiveAuthoring` (the two
 new level prefabs and the scene rewiring) and `SliceFiveSession` (the scripted play session that
 drove a three-level run headless). The session driver is the first throwaway that had to run in
 *play* mode, and the technique is worth recording rather than rediscovering: a
 `[RuntimeInitializeOnLoadMethod]` in the editor assembly fires in play mode, so the driver can inject
 itself into a running scene without a single line landing in a shipping assembly. A script that authors assets once is scaffolding, and this table
-describes what ships. `PathEditor` and the Pool Overlay remain the first files that will actually
-live here.
+describes what ships.
+
+**§13.5 added a third kind of throwaway, and it is the one worth copying.** `SliceSixPathCheck`
+drove `PathEditor`'s own insert and remove through reflection, headless, and asserted that the
+`Transform[]` array, the child objects and the bake still agreed afterwards. Editor GUI code is
+normally written off as untestable, and the handles and labels genuinely are — but the half that can
+silently corrupt a level's data calls no GUI function at all, so it can be driven directly. That
+check is also what caught the one thing this slice got wrong: it expected a two-waypoint path not to
+re-bake, and the tool was right and the check was wrong.
+
+`PoolOverlay` is now the only file §12 still says will live here.
 
 **That claim was false when §13.2 started, which is worth recording rather than silently
 repairing.** `SliceTwoAuthoring.cs` — 400 lines of it — was still on disk, so both this section and
@@ -1391,6 +1457,18 @@ declined, it declined with a trigger.
 other three still have their triggers, and the swap sharpened one of them — a `TowerRegistry` is now
 argued against rather than merely deferred (§13.4), because a level owning its towers is what makes
 their lifetime correct across a swap.
+
+**§13.5 removed nothing from this list and added nothing to it, and one thing on it needs a
+correction rather than a change.** Every reference to `PathEditor` in this document called it "§12
+work", while this section's own text never contained the word — so the tool was never actually
+excluded here, only described as if it were. It is now written (§13.5). The pool entries stand
+unchanged: `PoolOverlay` and a pool registry are still out, and `IPoolStats` still exists for a tool
+that does not. `UpgradeTowerCommand`, redo, a `TowerRegistry` and authored build plots remain
+deferrals with named triggers, none of which this slice touched.
+
+The prewarm retune (§2) is worth one line here because it looks like it should belong: it is not a
+scope change at all. Both numbers were always in scope and always readable from `GameConfig`; what
+§13.5 changed is that they are now measured rather than guessed.
 
 ***Multiple maps* was the second, and this one is a scope reversal rather than an implementation
 one.** It was listed on the reasoning that one map is enough to demonstrate a tower-defense round,
@@ -2010,6 +2088,140 @@ line of device reading — still needs a focused editor and a human hand.
 
 ---
 
+## 13.5 Sixth slice — the difficulty pass and the first editor tool — **done; Defeat has run**
+
+The first slice with **no new runtime type**. What it changed is data, documentation and tooling:
+eight new `WaveDefinition` assets so the three maps stop playing the same four waves, two prewarm
+constants retuned to measurements taken under that harder data, and `PathEditor` — the first file
+that ships from `MobileDemo.Editor`, five slices after the assembly was created for it.
+
+New assets: `Data/Waves/Wave05`–`Wave12`. Changed: `Level_02` and `Level_03` (their `waves` arrays,
+four lines each and nothing else), `Data/GameConfig.asset` and `GameConfig.cs` (both prewarm
+figures). New files: `Assets/Scripts/Editor/PathEditor.cs`, `Tools/unity.ps1`. Deleted after
+running: `SliceSixAuthoring`, `SliceSixSession`, `SliceSixPathCheck`.
+
+### What it makes real, rather than asserted
+
+- **`GamePhase.Defeat` has executed.** It has been reachable since §13.4 and had never run in the
+  project's life. It now has, at runtime, in a recorded session.
+- **Three maps play three different games.** §13.4 shipped the swap and deferred the sequences to
+  "the difficulty pass"; this is that pass. Twelve waves, four per map.
+- **§2's oldest open divergence is closed**, with numbers rather than argument. Four slices of
+  "recorded rather than acted on" end here.
+- **§11's `Editor/` folder holds a file**, so the §15 row that declines Odin Inspector because
+  hand-written tooling "is the flex here" is backed by tooling.
+- **§14's claim that no fixture loads a real asset is demonstrated**: the shipping game was retuned
+  and 280 tests neither broke nor noticed.
+
+### The insight the slice turned on
+
+**Certifying `Defeat` needed no difficulty change at all.** The obvious route was to tune the waves
+up until the board loses, which would have made the game harder in order to prove a transition
+works — two goals fighting each other, and a demo nobody can win at the end of it.
+
+The player already has an action that guarantees defeat: **selling**. Every map carries two authored
+towers, `SellTowerCommand` exists, and map 1's four waves carry 50 leak damage against 20 lives. So
+the session sells both towers in the opening build phase, builds nothing back, and starts waves.
+Lives went 20 → 14 → 6 → 0, and `Defeat` arrived during wave 3.
+
+That is stronger evidence than a tuning change would have produced, because the loss came from
+player actions running through the real commands rather than from arithmetic arranged to fail. It
+also means the difficulty ramp was free to be judged on whether the game is *good*, with the
+transition already proven by other means.
+
+### Seen running, on `Gameplay.unity`
+
+A scripted session drove two complete rounds at `Time.timeScale = 3`, publishing
+`BuildActionRequested` on the bus and feeding taps through a queue in place of
+`PointerInputService` (the harness limit below is unchanged). Both rounds, twice — before and after
+the prewarm retune:
+
+- **Round 1, the defeat round.** Both authored towers sold through `BuildController` (`2 -> 0`
+  towers, refund `100 -> 162`), then waves with no defense. `Defeat` at `lives=0` after wave 3, the
+  end screen up, and **terminal**: three further seconds of game time with zero phase changes,
+  which is §4's asymmetry observed rather than asserted.
+- **Restart, then round 2.** Reopened at `lives=20, currency=100`.
+- **Twelve waves across three maps, cleared.** `Build → Wave` alternating, `waveCompleted` 0–3 per
+  map, the level changing at exactly the two mid-run victories, and `Victory` terminal only on
+  map 3.
+- **`EndScreen` still does not flash.** Checked on the frame *after* each mid-run victory, both
+  times: hidden. Up and staying up on the final one.
+- **`Pool 'EnemySoldier': PeakActive=15, InstanceCount=30, Prewarm=30`** and **`Pool 'Projectile':
+  PeakActive=3, InstanceCount=8, Prewarm=8`** — `InstanceCount == Prewarm` in both, so the smaller
+  projectile pool never grew.
+- **A clean console**: no exceptions of any kind, and no `MissingReferenceException` across a
+  restart and four level swaps.
+- **280 EditMode tests green** (280 before), run through `Tools/unity.ps1 -Tests`.
+- **The authoring script is idempotent, proven by running it twice.** First run: `changes=18`.
+  Second: `changes=0`.
+- **`ProjectSettings.asset` is clean** — the fifth slice where that had to be checked, and the third
+  where assigning `Application.runInBackground` at runtime is what avoided it.
+
+### The four things this slice cost
+
+**A twelve-wave ramp is only honest if the run is winnable, and that forced the session to play
+properly rather than watch.** Two authored towers per map do not hold map 3, and a player would
+build more — so the driver places towers each build phase through the real tap path, choosing spots
+that are legal *and* within 1.8 units of the road, then spreading them by farthest-point. A grid
+scan alone piles towers into the first legal corner, which is legal and useless. The cost is a
+session driver that is genuinely a player rather than a metronome; the benefit is that
+`PlacementRules` and `PlaceTowerCommand` are exercised twelve times per run.
+
+**The measurement moved between runs, and that is a fact about the data rather than noise to hide.**
+Enemy `PeakActive` read 16 on one run and 15 on the next with identical wave data, because when a
+tower kills an enemy depends on the frame the wave started on. It is why the retune targets roughly
+twice the observed peak rather than the peak plus one.
+
+**`GameConfig.cs`'s field initialisers were wrong and nothing had noticed**, because nothing reads
+them: the asset supplies every value at runtime and no test constructs a bare `GameConfig`. They
+were corrected alongside the asset anyway — an initialiser that disagrees with the shipping asset is
+a trap for whoever creates the second config asset, which is exactly how a "sensible default" earns
+its place or loses it.
+
+**`PathEditor` had to decide what it is not.** No waypoint reordering UI, no self-intersection
+check, no clamping a waypoint to the map bounds — `Level.Bounds` comes from the map sprite, not from
+the path, and nothing at runtime cares. What it does own is the two silent failure modes: a null
+array entry (`EnemyPath.Bake` guards the array's *length*, so a filled array with an empty slot
+passes and then throws) and a duplicated waypoint (`PlacementRules` collapses a zero-length segment
+to a point, quietly shrinking the road's build clearance). Both surface as inspector warnings. A
+tool that only drew handles would have been decoration.
+
+### The finding this slice did not fix
+
+**Map 3 leaks two lives in a clean win, exactly as it did in §13.4.** Twelve waves, three maps, and
+the run still ends at `lives=18` — the ramp raised the *pressure* without raising the leak count,
+because the extra enemies die to the towers the extra currency buys. Whether that is the right
+answer for a portfolio demo is a design question, not a bug: a demo that ends 20/20 shows nothing,
+and one that ends 3/20 reads as unfinished. Named trigger to revisit: the first on-device playtest,
+where touch latency and a smaller screen change how many towers a human actually places.
+
+### What is *not* certified, unchanged from §13.2 through §13.4
+
+**No synthesized tap ever reached `PointerInputService`.** A CLI-launched editor is unfocused, so
+the Input System discards the press edge before the player loop reads it. This session replaced
+`BuildController`'s `IInputService` with a queue, so the whole build path below that interface —
+hit-test, validate, choose a command, push it, undo it — ran for real, twelve times a round. The
+same single link, one line of device reading, still needs a focused editor and a human hand.
+
+**And `PathEditor`'s scene view is the second thing on that list now.** The handles, the labels and
+the drag are `UnityEditor` GUI, which no headless run can drive; `SliceSixPathCheck` covered the
+insert/remove/re-bake logic underneath them (§14). Dragging a handle and watching the next wave walk
+the new road is a manual check, and it has not been done.
+
+### What this slice deliberately did *not* do
+
+- **No enemy or tower retune.** The ramp is wave counts and intervals only. `EnemyGreenSoldier` is
+  field-default-identical to `EnemyDefinition.cs`, and `EnemyTests` depends on those defaults — so
+  a stat change is a test change, and it belongs with a slice that means it.
+- **No per-map tower budget or authored build plots.** Still §12 deferrals with their triggers.
+- **No `PoolOverlay`.** The pool figures print to the console, which is where every retune this
+  project has made was read from.
+- **No `UpgradeTowerCommand`** — §7's trigger is a per-tower UI, and `PathEditor` is not it.
+- **No difficulty *curve* beyond the ramp.** No boss wave, no per-map modifiers. Three maps that
+  differ in wave data is what §1's scope asks for.
+
+---
+
 ## 14. Testing (lightweight, but present)
 
 EditMode tests where they're cheap and meaningful — exactly the seams the patterns created:
@@ -2066,6 +2278,25 @@ test real behaviour through public methods.
 matters about a tower is that it puts projectiles in the air at the right rate, at the right
 enemy, and not otherwise — and the pool already counts that. It also means the tests would catch a
 tower that fired correctly while leaking projectiles.
+
+**§13.5 added no fixture at all, and the suite stayed at 280 — which was the prediction, and is
+the result worth recording.** That slice changed twelve wave assets, two level prefabs and two
+numbers on `GameConfig`, and not one assertion moved. The reason is a property this section has
+claimed since the first draft and had never had a chance to demonstrate: **no fixture loads a real
+asset.** Every one builds its definitions with `ScriptableObject.CreateInstance` plus
+`SerializedFields`, so retuning the shipping game cannot break a test — and, in the same breath,
+cannot be *validated* by one either. Those 280 tests say the systems are right; only a play session
+can say the numbers are.
+
+**`PathEditor` is deliberately untested, and the reasoning is `EnemyPath`'s own, one paragraph
+down.** Testing it from `MobileDemo.Tests.EditMode` would mean adding a reference to
+`MobileDemo.Editor` to an assembly that is deliberately minimal — it references neither the UI nor
+the input package — in order to exercise `UnityEditor` GUI code, which is the least valuable half of
+the tool. What replaced that was a *throwaway* check driven headless (§11): `SliceSixPathCheck`
+reflected into the editor's own insert and remove and asserted that the array, the child objects
+and the bake still agreed. It is not in the suite because it is scaffolding, and it is honest about
+what it does not cover — the handles and the labels need a focused editor and a human hand, which
+is stated as uncertified in §13.5 rather than claimed.
 
 §13.4 added two more — `LevelRunnerTests` and `VictoryStateTests` — and extended `WaveRunnerTests`
 with `Bind`. That takes the suite from 256 to **280**. Two things about them are worth recording:
@@ -2234,7 +2465,7 @@ objects; rolling our own for pooled `Component`s is a deliberate choice, recorde
 ### Deliberately excluded
 | Not used | Why |
 |---|---|
-| **Odin Inspector** | Would replace the hand-written custom editors (`PathEditor`) — that tooling *is* the flex here |
+| **Odin Inspector** | Would replace the hand-written custom editors — and as of §13.5 `PathEditor` exists, so this row is backed by a file rather than by an intention. That tooling *is* the flex here |
 | **DI frameworks** (VContainer / Zenject) | Over-abstraction at this scale; reads as cargo-culting, not competence |
 | **Ads / IAP / analytics** (Unity Gaming Services) | Out of scope per §12; dilutes a focused demo into a half-built product |
 | **Asset-store TD kits, behaviour-tree assets** | They do exactly the work the demo exists to demonstrate |
@@ -2244,6 +2475,38 @@ objects; rolling our own for pooled `Component`s is a deliberate choice, recorde
 Git + a Unity `.gitignore`. Version control is a baseline requirement in the roles this demo
 targets, and a clean commit history is itself portfolio evidence. Unity's own Version Control
 is free, but Git is the expected standard.
+
+### The editor CLI — `Tools/unity.ps1`
+
+Two jobs, because they are the only two this project has ever needed: run the EditMode suite
+headless, and run a static method for the throwaway authoring and session scripts §11 describes.
+It resolves the editor from `ProjectSettings/ProjectVersion.txt` rather than taking whatever is
+newest, because opening this project with a different editor rewrites that file and can upgrade
+every asset silently.
+
+**It exists because five slices rediscovered the same two traps from a log**, and neither one
+announces itself:
+
+- **`-runTests` must never be combined with `-quit`.** The editor exits before the runner starts
+  and returns 0 — a green run that executed nothing. The script therefore never passes `-quit` for
+  a test run *and* judges the run on the result XML rather than on the exit code, because the exit
+  code is exactly what the trap corrupts.
+- **Do not write `PlayerSettings.runInBackground` from a batch-mode script.** The write does not
+  flush before the editor exits, which left `ProjectSettings.asset` dirty in git once and had to be
+  reverted by hand (§13.2). A session driver assigns `Application.runInBackground` at runtime
+  instead. §13.5 is the second slice where that is why the working tree stayed clean.
+
+Two smaller ones the script now absorbs, both found writing it: a project path containing a space
+must be quoted per argument, because `Start-Process` joins `-ArgumentList` with spaces and adds no
+quotes of its own — Unity then reports a path with the fragments concatenated, an error a long way
+from its cause. And Windows PowerShell 5.1 hands back a `Process` whose handle it has already
+closed, so `ExitCode` reads empty however long you wait unless `.Handle` is touched first; the
+symptom is a clean run reported as a failure, because `$null -ne 0`.
+
+Why a script rather than a documented command line: the invocation is not guessable, and a comment
+in a markdown file cannot enforce the first trap. This ships beside `lint.ps1`, outside `Assets/`,
+referencing no assembly — so it answers to this section's dependency policy by not being a
+dependency.
 
 ### Lint — `.editorconfig` + `dotnet format`
 

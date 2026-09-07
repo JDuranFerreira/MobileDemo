@@ -170,9 +170,13 @@ instantiates every map and an authored one would be a second, unmanaged level un
 now load-bearing twice per run.
 
 `Level_02` (coastal hook) and `Level_03` (central lake) are authored, each with its own map art,
-its own traced waypoints and its own two towers. All three carry the same `Wave01`–`Wave04`
-sequence: authoring a harder ramp per map is the difficulty pass §13.3 named, and guessing at it in
-the slice that built the swap would be tuning against untested intuition twice over.
+its own traced waypoints and its own two towers.
+
+**Each now carries its own wave sequence, which is the difficulty pass §13.3 named and §13.5
+delivered.** `Level_01` keeps `Wave01`–`Wave04`, `Level_02` runs `Wave05`–`Wave08` and `Level_03`
+runs `Wave09`–`Wave12`. The diff that did it is four lines per prefab and nothing else — no
+component changed, no field was added, and no code was touched. That is the `waves` field's own
+claim, three slices old, finally collected on.
 
 **`LevelTests` is this component's first fixture**, added with the build slice, and §14 records why
 it does not reverse the decision to leave `EnemyPath` untested: `Level` stopped being two
@@ -180,15 +184,25 @@ serialized getters the moment it grew a lazy-seeded runtime list and two mutator
 
 **§13.3 authored the wave sequence into it**: `Wave01`–`Wave04`, ramping count and tightening
 interval, with `EnemyGreySoldier` entering in wave 3 — the first time that definition has ever been
-spawned. See [wave-runner.md](wave-runner.md).
+spawned. §13.5 extended that to twelve waves, four per map. See
+[wave-runner.md](wave-runner.md).
 
 What completes this system, with triggers:
 
 | Missing | Trigger |
 |---|---|
 | Build plots, instead of a distance rule | a map whose road art yields a legal spot that reads as unbuildable. Two more maps did not produce one — the lake on `Level_03` is the closest thing, and it is scenery a tap can legally build on |
-| Per-level wave sequences | the difficulty pass, which is authoring on the existing `waves` field rather than code |
 
 The two rows that closed did so together: `LevelRunner` shipped in §13.4 and the two prefabs came
 with it. The consequence §4 records has landed as well — `Victory` is no longer terminal except on
 the last map, which is the real cost of §12's multiple-maps reversal and is now paid.
+
+**Per-level wave sequences was the third row and §13.5 closed it**, leaving one. Worth noting what
+that row's trigger turned out to be worth: it said the work was "authoring on the existing `waves`
+field rather than code", and that was exactly right — the whole feature is eight assets and two
+four-line prefab diffs.
+
+**The one thing per-map sequences changed that this guide did not predict** is that `Level_03` is
+now the map that decides the pool sizes. `ENEMY_POOL_PREWARM` is a run constant sized for the worst
+map (§2), and before §13.5 all three maps were equally hard, so "the worst" was a formality. It
+isn't now, and a future retune has to be measured on a run that reaches map 3.

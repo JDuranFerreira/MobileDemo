@@ -115,6 +115,20 @@ and one terminal victory.
 collaborators are an interface and a static bus, which only `EconomyTests` can also say.
 `BuildStateTests` covers the subscription-lifetime claim, and `VictoryStateTests` the swap.
 
-**The defeat transition has still never been seen at runtime**, only in tests — but §13.3's finding
-is now half answered by accident rather than by tuning: lives do move on map 3 (20 → 18 across both
-of §13.4's runs), so leaks are reachable. Losing is not, because two leaks is not twenty.
+**The defeat transition has now been seen at runtime, and §13.5 is where that finally happened.**
+It had been asserted by tests since §13.3 and never executed. What made it cheap was not tuning the
+waves up: the player already has an action that guarantees defeat, which is selling the map's
+authored towers and building nothing back. The recorded session sold both, started waves, and
+watched lives go 20 → 14 → 6 → 0, entering `Defeat` during wave 3 of map 1.
+
+Two things that transition proved which no test could:
+
+- **It fires from `Wave`, mid-wave, on an event.** `OnLivesChanged` has no phase guard (see the
+  Gotchas above), and this is the first observation of it firing from a live phase rather than a
+  fixture.
+- **It is genuinely terminal.** Three further seconds of game time with **zero** phase changes,
+  with the end screen up throughout — §4's Victory/Defeat asymmetry observed rather than asserted.
+
+For the record, this did not come from a difficulty change. A clean win still ends at `lives=18`,
+exactly as in §13.4, because the harder waves buy the player more currency and therefore more
+towers. §13.5 records that as an open design question with the on-device playtest as its trigger.

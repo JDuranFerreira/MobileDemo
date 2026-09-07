@@ -158,8 +158,12 @@ client. Three things it exercised that `Enemy` never did:
 - **Several pools of the same closed type.** A projectile's tuning lives on its prefab (§7), so
   each prefab needs its own pool — and pools are therefore keyed by prefab, not by type. Nothing
   in `ObjectPool<T>` had to change for that; the factory above it does the keying.
-- **A measured prewarm that is far too large.** Both projectile pools peaked at 1 active against
-  a prewarm of 128. §2 records why that is not simply edited down yet.
+- **A measured prewarm that was far too large — and is now retuned.** Both projectile pools peaked
+  at 1 active against a prewarm of 128, which §2 recorded for three slices rather than editing.
+  §13.5 settled it at **8** against a measured `PeakActive=3`, taken across twelve waves on three
+  maps. What made it settleable was harder data, not more patience: the constant has to cover the
+  worst map the shipping game can present, and until twelve waves were authored no run had
+  presented it.
 
 Still no second `Enemy` pool: the planned tanks cannot share the soldier silhouette and so will
 need one, which is the trigger [enemy-factory.md](enemy-factory.md) already names.
@@ -193,6 +197,18 @@ recycling is now observed at two different prewarms, which is a stronger claim t
 one size. And the prewarm the asset carries no longer matches the 64 §2 names — that divergence
 is recorded there, unresolved on purpose, because 9 is still map 1's peak under a placeholder
 spawner and §2's figure has to cover the worst of three maps under a real `WaveRunner`.
+
+**Both figures are settled as of §13.5, and the enemy one settled in the direction this guide's
+paragraph above implies rather than the one §2 named.** Twelve authored waves across three maps
+measured `PeakActive=15` and `16` on consecutive runs, so the asset's 30 was correct all along and
+the document's 64 was the number that had to move. The projectile pool went from 128 to 8 against a
+peak of 3. Both runs report `InstanceCount == Prewarm` with no growth warning, so the smaller pool
+is a measurement rather than a gamble — and §6's growth-on-exhaustion is precisely what makes
+retuning *downward* a safe direction to move in: a prewarm guessed low costs one frame's
+`Instantiate` and one console line, not a spawn that never appears.
+
+Recycling is therefore now observed at **four** different prewarm sizes across the project's
+history (64, 30, 128, 8), which is the strongest form the claim can take without a PlayMode test.
 
 **One prediction this guide made was wrong, and is corrected rather than quietly dropped.** It
 used to close by saying `Enemy` would be "the first place the `OnEnable`-before-`OnSpawn` gotcha

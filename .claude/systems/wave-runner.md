@@ -49,11 +49,21 @@ member of the plain-class default §6 notices, after `EnemyRegistry`, `Placement
 
 ## Data
 
-`WaveDefinition` assets, referenced from [`Level`](level.md)'s `waves` array. Four are authored —
-`Data/Wave01..Wave04.asset` — ramping count and tightening interval, with `EnemyGreySoldier`
-entering in wave 3. That is the **first time the grey soldier has ever been spawned**: it has been
-authored since §13 and unreferenced ever since, because `Bootstrap`'s stand-in held one
-`EnemyDefinition` rather than a list.
+`WaveDefinition` assets, referenced from [`Level`](level.md)'s `waves` array. **Twelve are authored
+as of §13.5 — `Data/Waves/Wave01..Wave12.asset`, four per map.**
+
+`Wave01`–`Wave04` are map 1's original curve: green only, with `EnemyGreySoldier` entering in
+wave 3. That was the **first time the grey soldier had ever been spawned** — it had been authored
+since §13 and unreferenced ever since, because `Bootstrap`'s stand-in held one `EnemyDefinition`
+rather than a list.
+
+`Wave05`–`Wave08` (map 2) open with grey rather than introducing it, and `Wave09`–`Wave12`
+(map 3) are grey-majority. Intervals tighten monotonically across all twelve, from 1.2s down to
+0.5s. **Interval is the axis the ramp leans on, and that is a deliberate choice rather than an
+aesthetic one:** a shorter interval raises how many enemies are on the board at once, where a
+larger `count` raises the leak damage a single wave can do. One makes the map harder to hold; the
+other makes it harder to survive a mistake on. This runner's own concurrency — and therefore the
+enemy pool's `PeakActive` — moves with the first.
 
 `spawnIntervalSeconds` is gone from `Bootstrap`. It was labelled "wave data, and `WaveDefinition`
 absorbs it" from the day it was written, and it now has.
@@ -105,6 +115,18 @@ session. The enemy pool peaked at 12 against a prewarm of 30 and never grew, whi
 
 §13.4 played the same runner across three maps in one session — twelve waves, rebound twice — with
 the enemy pool peaking at 16 against the same prewarm of 30.
+
+**§13.5 played twelve *distinct* waves across the same three maps, and the concurrency barely
+moved** — `PeakActive` read 16 and then 15 on two runs of harder data than §13.4's. That is worth
+recording because the naive prediction was that a tighter ramp would raise the peak, and it did not:
+map 3's waves spawn faster, but the player has more currency by then and buys more towers, so
+enemies leave the board faster too. The peak is set by the *balance* between spawn rate and kill
+rate, not by the spawn rate alone — which is why §2's prewarm figures were settled on a measurement
+rather than on arithmetic over the wave assets.
+
+Also observed there, and it is this runner's guarantee rather than luck: **twelve waves, four level
+binds, no `MissingReferenceException`.** `Bind` refuses while a wave is running, so "a level changes
+only between waves" held across two full runs including a scene reload between them.
 
 `WaveRunnerTests` — 22 tests, its own pool and registry rather than `BuildScaffold`, because this
 is the fixture that cares whether a finished enemy actually goes back to the pool. Four of them

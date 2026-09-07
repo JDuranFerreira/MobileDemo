@@ -8,8 +8,8 @@ namespace MobileDemo.Core.Config
         [SerializeField] int targetFrameRate = 60;
         [SerializeField] int startingLives = 20;
         [SerializeField] int startingCurrency = 100;
-        [SerializeField] int enemyPoolPrewarm = 64;
-        [SerializeField] int projectilePoolPrewarm = 128;
+        [SerializeField] int enemyPoolPrewarm = 30;
+        [SerializeField] int projectilePoolPrewarm = 8;
         [SerializeField] float towerScanIntervalSec = 0.1f;
         [SerializeField] float sellRefundFraction = 0.5f;
         [SerializeField] float buildRoadClearance = 0.9f;
@@ -23,6 +23,10 @@ namespace MobileDemo.Core.Config
 
         // Supplied to ObjectPool<T>'s constructor by Bootstrap. The pool still knows nothing about
         // this asset, which is what keeps it testable with no asset and no scene.
+        //
+        // Both prewarm figures are now measured rather than guessed, across a full twelve-wave run
+        // of all three maps: PeakActive 16 here and 3 for projectiles. §2 records what the earlier
+        // numbers were and why they stood unresolved for four slices.
         public int EnemyPoolPrewarm => enemyPoolPrewarm;
 
         // Per projectile *prefab*, not per projectile type: the pools are keyed by prefab, and

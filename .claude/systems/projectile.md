@@ -77,9 +77,15 @@ prefab has to be reachable from the data that names a type.
 Both multipliers are `1` on purpose: the move to assets was a refactor, and it preserves §13.3's
 balance exactly. The damage they scale is `TowerDefinition.damage` — 1 on both tower types.
 
-`PROJECTILE_POOL_PREWARM` (128) sizes **each pool**, and there is now one pool rather than two,
-because both definitions name the same prefab. §2 records that this figure is measurably oversized
-— both pools peaked at 1 — and why it is not simply edited down yet.
+`PROJECTILE_POOL_PREWARM` (**8** as of §13.5) sizes **each pool**, and there is now one pool rather
+than two, because both definitions name the same prefab. It was 128 for three slices while §2
+recorded it as measurably oversized; §13.5 settled it against a measured `PeakActive=3` taken across
+twelve waves on three maps, with `InstanceCount` never leaving the prewarm.
+
+The arithmetic behind why so few are ever airborne is worth keeping, because 8 looks small next to a
+wave of two dozen enemies: the authored towers fire at 2/s and 0.8/s, and a projectile's whole
+flight is under a second at speeds of 12 and 6 units. So a tower has at most one shot in the air at
+a time, and the pool is sized by *tower count*, not by enemy count.
 
 ## Gotchas
 
@@ -98,8 +104,10 @@ because both definitions name the same prefab. §2 records that this figure is m
 - **`aimPoint` is seeded in `Configure`**, so a projectile whose target dies on its very first
   tick still has somewhere to fly instead of impacting on the tower.
 - **Pools are prewarmed up front, from the definitions handed to the constructor.** A pool created
-  lazily on the first shot would allocate its whole 128-instance prewarm in one frame — the exact
-  spike §2 calls pooling mandatory to prevent. The cost is that `Bootstrap` must collect the
+  lazily on the first shot would allocate its whole prewarm in one frame — the exact
+  spike §2 calls pooling mandatory to prevent. (That argument was written when the prewarm was 128
+  and survives the retune to 8 unchanged: the reason is *when* the allocation happens, not how much
+  of it there is.) The cost is that `Bootstrap` must collect the
   distinct definitions before constructing the factory.
 - **An unregistered definition logs an error and returns null rather than throwing.** A tower wired
   to a definition the factory was never told about should cost that tower its shots, not the whole
