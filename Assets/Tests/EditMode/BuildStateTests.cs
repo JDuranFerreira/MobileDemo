@@ -5,6 +5,7 @@ using MobileDemo.Gameplay.Build;
 using MobileDemo.Gameplay.Phases;
 using MobileDemo.Gameplay.Towers;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace MobileDemo.Tests.EditMode
 {
@@ -71,6 +72,18 @@ namespace MobileDemo.Tests.EditMode
 
         static void RequestStartWave() =>
             EventBus<BuildActionRequested>.Publish(new BuildActionRequested(BuildAction.StartWave));
+
+        /// <summary>
+        /// A whole purchase, driven through the machine: two taps, because the first arms a ghost
+        /// and the second buys it.
+        /// </summary>
+        void ConfirmAt(Vector2 world)
+        {
+            input.Tap(world);
+            machine.Tick(0.1f);
+            input.Tap(world);
+            machine.Tick(0.1f);
+        }
 
         /// <summary>A sold tower, still alive and owned by the undo stack.</summary>
         Tower SellATower()
@@ -164,8 +177,7 @@ namespace MobileDemo.Tests.EditMode
         {
             machine.Change(GamePhase.Build);
 
-            input.Tap(BuildScaffold.LegalSpot);
-            machine.Tick(0.1f);
+            ConfirmAt(BuildScaffold.LegalSpot);
 
             Assert.AreEqual(1, scaffold.Level.Towers.Count);
             Assert.AreEqual(1, build.UndoDepth);
@@ -175,13 +187,58 @@ namespace MobileDemo.Tests.EditMode
         public void Exit_ClearsTheUndoStack()
         {
             machine.Change(GamePhase.Build);
-            input.Tap(BuildScaffold.LegalSpot);
-            machine.Tick(0.1f);
+            ConfirmAt(BuildScaffold.LegalSpot);
             Assert.AreEqual(1, build.UndoDepth, "precondition");
 
             machine.Change(GamePhase.Wave);
 
             Assert.AreEqual(0, build.UndoDepth);
+        }
+
+        /// <summary>
+        /// The undo scope, which is what lets building carry on into a wave without the wave having
+        /// a stack to protect: after this phase exits, a purchase still happens and records nothing.
+        /// </summary>
+        [Test]
+        public void Exit_ClosesTheUndoScopeSoLaterPurchasesAreNotRecorded()
+        {
+            machine.Change(GamePhase.Build);
+            machine.Change(GamePhase.Wave);
+
+            input.Tap(BuildScaffold.LegalSpot);
+            build.Tick();
+            input.Tap(BuildScaffold.LegalSpot);
+            build.Tick();
+
+            Assert.AreEqual(1, scaffold.Level.Towers.Count, "the tower was still bought");
+            Assert.AreEqual(0, build.UndoDepth);
+        }
+
+        /// <summary>Re-entering the phase re-opens the scope, as it re-arms the Go button.</summary>
+        [Test]
+        public void Enter_ReopensTheUndoScope()
+        {
+            machine.Change(GamePhase.Build);
+            machine.Change(GamePhase.Wave);
+            machine.Change(GamePhase.Build);
+
+            ConfirmAt(BuildScaffold.LegalSpot);
+
+            Assert.AreEqual(1, build.UndoDepth);
+        }
+
+        /// <summary>A ghost is a question asked in this phase, so it does not outlive it.</summary>
+        [Test]
+        public void Exit_CancelsAPendingPlacement()
+        {
+            machine.Change(GamePhase.Build);
+            input.Tap(BuildScaffold.LegalSpot);
+            machine.Tick(0.1f);
+            Assert.IsNotNull(build.Pending, "precondition");
+
+            machine.Change(GamePhase.Wave);
+
+            Assert.IsNull(build.Pending);
         }
 
         /// <summary>
@@ -209,8 +266,7 @@ namespace MobileDemo.Tests.EditMode
         public void Exit_LeavesTowersThatWerePlaced()
         {
             machine.Change(GamePhase.Build);
-            input.Tap(BuildScaffold.LegalSpot);
-            machine.Tick(0.1f);
+            ConfirmAt(BuildScaffold.LegalSpot);
             Tower placed = scaffold.Level.Towers[0];
 
             machine.Change(GamePhase.Wave);

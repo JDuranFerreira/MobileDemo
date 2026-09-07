@@ -172,11 +172,20 @@ something the game does twice per run.
   existed so a tower added or removed this frame was settled before anything iterated the list;
   build and combat now run in different phases and so never in the same frame, which is a stronger
   guarantee than the ordering was.
+  - **§13.6 took that guarantee back and the ordering rule returned with it.** Building is allowed
+    during a wave, so `WaveState.Tick` is `build.Tick()`, enemies, towers, projectiles — the
+    original five-call order, restored for its original reason. This class still owns none of it.
 - **Building is gated now, and §10's allocation budget is repaired.** The violation this guide used
   to record — one `Instantiate` per player tap during what was nominally a wave — is gone, and it
   went exactly as §9 predicted: `BuildState` stops it by not calling `build.Tick()`, with no `bool
   buildingAllowed` and no change to `BuildController` at all. That is the driven tick's "pausing is
   free" argument paying its third and largest dividend.
+  - **And §13.6 reopened it deliberately**, because building during a wave is the game it should
+    have been: `WaveState` calls `build.Tick()` too, so one `Instantiate` per *confirmed* placement
+    can land mid-wave. §10 carries the amended invariant — nothing the game does on its own
+    allocates — and the mechanism is untouched: the gate is still which states tick, and
+    `Victory`/`Defeat` still tick nothing that builds. What did not come with it is undo, which
+    `BuildState` now scopes explicitly (see [build-controller.md](build-controller.md)).
 - **`Update` is now a single call and `OnDisable` grew instead.** `machine?.Shutdown()` is there
   for a hazard nothing else covers: `BuildState` subscribes in `Enter` and unsubscribes in `Exit`,
   and a scene teardown — which a restart is — never reaches `Exit`. With domain reload off, the

@@ -29,13 +29,20 @@ namespace MobileDemo.Gameplay.Phases
         // Subscribed per phase rather than for the round, which is the interesting half: the Go
         // button cannot start a second wave mid-wave because nothing is listening for it, rather
         // than because something checked. The subscription's lifetime *is* the rule.
-        public void Enter() => EventBus<BuildActionRequested>.Subscribe(OnBuildActionRequested);
+        public void Enter()
+        {
+            EventBus<BuildActionRequested>.Subscribe(OnBuildActionRequested);
 
-        // Building is allowed because this state is ticked, and stops during a wave because
-        // WaveState does not tick it. §9 argued that a driven tick makes pausing free and §10
-        // recorded an allocation-budget violation that would "repair itself with no code change"
-        // when this landed; the repair is this line's absence from WaveState, which is as close to
-        // no code change as the prediction could have got.
+            // The undo button works in this phase and nowhere else, and this is where that becomes
+            // true. BuildController records to its stack only while the scope is open, so a tower
+            // built during a wave is permanent the instant it is bought -- without the controller
+            // ever learning what a phase is.
+            build.OpenUndoScope();
+        }
+
+        // Building is allowed because this state is ticked -- and it is now allowed during a wave
+        // too, because WaveState ticks it as well. What the two phases still do not share is undo:
+        // see Enter.
         //
         // Projectiles still fly, and that is not an oversight. A wave is cleared when the last
         // enemy dies, which can leave a shot mid-air; without this it would hang there, frozen,
@@ -53,8 +60,13 @@ namespace MobileDemo.Gameplay.Phases
             // §6 named this exact method as the trigger for destroying a sold tower: a sale
             // deactivates rather than destroys because undo has to restore the instance, not
             // manufacture a replacement, so the GameObject is owned by the undo stack. Once the
-            // wave starts, nothing can pop that stack, so ownership ends here.
-            build.ClearHistory();
+            // wave starts, nothing can pop that stack, so ownership ends here. CloseUndoScope
+            // clears it and stops the next phase's commands joining it.
+            build.CloseUndoScope();
+
+            // A ghost is a question the player was asked in this phase, so it does not outlive it.
+            // WaveState.Exit says the same thing for the other direction.
+            build.CancelPending();
         }
 
         void OnBuildActionRequested(BuildActionRequested evt)

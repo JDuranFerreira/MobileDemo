@@ -173,7 +173,11 @@ namespace MobileDemo.Gameplay
             WaveRunner waves = new WaveRunner(factory, enemies, levels.Waypoints);
 
             machine = new GameStateMachine();
-            WaveState waveState = new WaveState(machine, waves, levels, projectiles);
+
+            // The build controller goes into both phases now, because both of them tick it: a
+            // tower can be bought during a wave. What the wave phase does not get is the undo
+            // stack -- BuildState opens and closes that scope.
+            WaveState waveState = new WaveState(machine, waves, levels, projectiles, build);
 
             machine.Add(GamePhase.Build, new BuildState(machine, build, projectiles));
             machine.Add(GamePhase.Wave, waveState);

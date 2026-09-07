@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using MobileDemo.Core.Events;
 using MobileDemo.Core.Interfaces;
+using MobileDemo.Gameplay.Build;
 using MobileDemo.Gameplay.Levels;
 using MobileDemo.Gameplay.Towers;
 using MobileDemo.Gameplay.Waves;
@@ -23,16 +24,22 @@ namespace MobileDemo.Gameplay.Phases
         readonly LevelRunner levels;
         readonly ProjectileFactory projectiles;
 
+        // Held for the same reason BuildState holds it: a tower can now be bought mid-wave, which
+        // is a design change rather than a tidy-up -- a tower defence where the answer to a wave
+        // going badly is to watch it go badly is the version of the game nobody plays.
+        readonly BuildController build;
+
         int nextWaveIndex;
 
         public WaveState(
             GameStateMachine machine, WaveRunner waves, LevelRunner levels,
-            ProjectileFactory projectiles)
+            ProjectileFactory projectiles, BuildController build)
         {
             this.machine = machine ?? throw new ArgumentNullException(nameof(machine));
             this.waves = waves ?? throw new ArgumentNullException(nameof(waves));
             this.levels = levels ?? throw new ArgumentNullException(nameof(levels));
             this.projectiles = projectiles ?? throw new ArgumentNullException(nameof(projectiles));
+            this.build = build ?? throw new ArgumentNullException(nameof(build));
         }
 
         // Called by VictoryState after a swap, not by a subscription. This object holds the runner
@@ -69,16 +76,17 @@ namespace MobileDemo.Gameplay.Phases
             waves.StartWave(sequence[nextWaveIndex], nextWaveIndex);
         }
 
-        // §9's ordering, moved rather than changed: enemies move first (inside WaveRunner.Tick),
-        // then towers scan the positions they moved to, then projectiles fly at those same
-        // positions. Ticking towers first would aim every shot one frame stale.
+        // §9's ordering, in full: building goes first of all, then enemies move (inside
+        // WaveRunner.Tick), then towers scan the positions they moved to, then projectiles fly at
+        // those same positions. Ticking towers first would aim every shot one frame stale.
         //
-        // "Building goes first of all" is gone from that order, and it is not an omission. It
-        // existed so a tower added or removed this frame was settled before anything iterated the
-        // list; build and combat now run in different phases and so never in the same frame, which
-        // is a stronger guarantee than the ordering was.
+        // "Building goes first of all" was deleted from this order when the phases landed, on the
+        // argument that build and combat could no longer share a frame. They can again, so the
+        // line is back with its original justification: a tower bought or sold this frame is
+        // settled before TickTowers iterates the list it is in.
         public void Tick(float dt)
         {
+            build.Tick();
             waves.Tick(dt);
             TickTowers(dt);
             projectiles.Tick(dt);
@@ -93,11 +101,13 @@ namespace MobileDemo.Gameplay.Phases
                 nextWaveIndex < levels.Current.Waves.Count ? GamePhase.Build : GamePhase.Victory);
         }
 
-        // Nothing to undo. The wave's own teardown is the runner going quiet on its own, and the
-        // enemies it spawned are already back in the pool -- IsCleared is what says so.
-        public void Exit()
-        {
-        }
+        // The wave's own teardown is still the runner going quiet on its own, and the enemies it
+        // spawned are already back in the pool -- IsCleared is what says so. What this body is for
+        // is the ghost: a pending placement is a question asked in one phase, and every route out
+        // of a phase that can build now answers it. With BuildState.Exit doing the same, the four
+        // routes are covered -- Build->Wave, Wave->Build, Wave->Victory, and a defeat from either,
+        // since the machine calls the current state's Exit on every Change.
+        public void Exit() => build.CancelPending();
 
         // Backwards, because the list can change during a round. Moved here from Bootstrap intact:
         // the level still owns the live tower set, because a runtime-placed tower is the level's

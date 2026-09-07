@@ -144,6 +144,19 @@ it is `BuildMenu` that subscribes, greying out a button whose tower the player c
 `BuildController` asks `Economy` directly. Both UI classes are excluded from tests by the same
 assembly-reference decision.
 
+**§13.6 gave `BuildMenu` two phase gates where it had one, and a colour where `interactable` was
+already spoken for.** Towers can be bought during a wave now, so the tower buttons are live in
+`Build` *and* `Wave` while Undo and Go stay `Build`-only — the first is a design change, the second
+two are the undo scope and the Go subscription respectively (see
+[build-controller.md](build-controller.md) and [game-state-machine.md](game-state-machine.md)). The
+armed type is shown by writing `selectedTint` to the button's own `image.color`, not to its
+`ColorBlock`: the `Button`'s own `ColorTint` transition keeps multiplying its pressed and disabled
+states over the top, so "armed" and "cannot afford" are both legible at once. `selectedIndex` opens
+at 0 because `BuildController`'s constructor seeds `Selected` from the catalogue's first entry — the
+same fact stated on both sides of §3's seam, since nothing publishes the selection and neither
+assembly may reference the other. *Trigger for making it an event: a second thing that can change
+the selection.* The menu still enforces nothing; the phase and the scope do.
+
 **One gotcha this class inherited without changing:** with an `EventSystem` in the scene — which
 the build menu requires — `TMP_Text` inherits `Graphic.raycastTarget = true`, so the "Lives" and
 "$" labels would start swallowing world taps that land under them. Both are set to `false`. Nothing

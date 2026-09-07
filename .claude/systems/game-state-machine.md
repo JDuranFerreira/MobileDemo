@@ -26,8 +26,8 @@ It deliberately does **not**:
 | Type | File | Role |
 |---|---|---|
 | `GameStateMachine` | [GameStateMachine.cs](../../Assets/Scripts/Gameplay/Phases/GameStateMachine.cs) | Holds the states, swaps, publishes, forwards `Tick` |
-| `BuildState` | [BuildState.cs](../../Assets/Scripts/Gameplay/Phases/BuildState.cs) | Place/sell; listens for Go |
-| `WaveState` | [WaveState.cs](../../Assets/Scripts/Gameplay/Phases/WaveState.cs) | Drives `WaveRunner` and the combat tick order |
+| `BuildState` | [BuildState.cs](../../Assets/Scripts/Gameplay/Phases/BuildState.cs) | Place/sell; listens for Go; opens and closes the undo scope |
+| `WaveState` | [WaveState.cs](../../Assets/Scripts/Gameplay/Phases/WaveState.cs) | Drives `WaveRunner` and the combat tick order — which starts with building again |
 | `VictoryState` | [VictoryState.cs](../../Assets/Scripts/Gameplay/Phases/VictoryState.cs) | Swaps in the next map, or freezes the board when the run is won |
 | `DefeatState` | [DefeatState.cs](../../Assets/Scripts/Gameplay/Phases/DefeatState.cs) | Empty, and stays empty (see Gotchas) |
 
@@ -51,7 +51,8 @@ in the machine and reset by hand.
 | Subscribes | `LivesChanged`, for the defeat check |
 
 `BuildState` holds [`BuildController`](build-controller.md) and `ProjectileFactory`; `WaveState`
-holds [`WaveRunner`](wave-runner.md), [`LevelRunner`](level-runner.md) and `ProjectileFactory`;
+holds [`WaveRunner`](wave-runner.md), [`LevelRunner`](level-runner.md), `ProjectileFactory` **and
+the same `BuildController`**;
 `VictoryState` holds the machine, the [`LevelRunner`](level-runner.md) and `WaveState`.
 
 **`WaveState` holds the runner rather than a [`Level`](level.md), as of §13.4**, and the difference
@@ -86,6 +87,16 @@ code. `GamePhase` lives in Core's `GameEvents.cs` because `PhaseChanged` carries
   `SubsystemRegistration`, which a scene load does not reach — so without this a dead `BuildState`
   stays on the bus holding a destroyed `Level`, and the restart's second round throws
   `MissingReferenceException` from code that reads as correct. `Bootstrap.OnDisable` calls it.
+- **Which states tick `BuildController` is the whole of the build gate, and §13.6 widened it
+  rather than replacing it.** `BuildState.Tick` and `WaveState.Tick` both call it, so a tower can be
+  bought mid-wave; `VictoryState` and `DefeatState` do not, so the board is inert behind the end
+  screen. There is still no `if (phase == Build)` anywhere. What could not be answered by the same
+  mechanism is undo, because a *tick* is per frame and undo is per phase: `BuildState.Enter` opens
+  `BuildController`'s undo scope and `Exit` closes it, which is why a mid-wave purchase is permanent
+  the instant it happens. `BuildStateTests` pins both halves.
+- **Both `Exit` bodies cancel a pending placement, and between them they cover every route out.**
+  Build→Wave, Wave→Build, Wave→Victory, and a defeat from either — the machine calls the current
+  state's `Exit` on every `Change`, so no ghost survives a phase it was offered in.
 - **Defeat is checked from any phase, with no "am I in a wave" guard.** Lives only fall during a
   wave today, so the guard would be a condition that is always true — and one that would silently
   swallow the loss if a cost ever charged lives outside one.

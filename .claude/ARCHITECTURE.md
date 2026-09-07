@@ -318,6 +318,18 @@ sharing the interface was three empty `Exit()` bodies and that the round's machi
 `BuildState.Exit()` does two jobs: it unsubscribes the Go button — so the button is dead mid-wave
 because *nothing is listening*, not because anything checked — and it clears the undo stack,
 destroying towers sold during the phase. Both are things a guard clause would have done worse.
+`WaveState.Exit()` is no longer one of the empty ones either: it cancels a pending placement, so a
+ghost cannot survive the phase that offered it.
+
+**§13.6 let the player build during a wave, and the gate survived intact.** `WaveState` now ticks
+`BuildController` as well, first in its order (§9). What did *not* happen is a phase check: the rule
+is still "which states tick it", and `VictoryState` and `DefeatState` tick nothing that builds, so
+the board is inert on the end screen for the same structural reason as before. What could not be
+answered that way is **undo**, which belongs to the build phase alone — a stack that survived into a
+wave would let a player rewind a tower a leak had already got past. So `BuildState.Enter()` opens an
+undo scope and `Exit()` closes it: with the scope closed a command still executes and is simply
+never recorded, which makes a mid-wave purchase permanent the instant it happens. The invoker still
+holds no `GamePhase` and asks nothing about phases; the phase tells *it*.
 
 **The enemy's machine shipped first**, ahead of `GameStateMachine`, because §13's slice has no
 phases: a one-state round machine would demonstrate nothing and be rewritten once real phases
@@ -352,12 +364,13 @@ cannot infer:
 | `Projectile` | Flight, impact, splash | **Object Pool**, ScriptableObject-driven (§7) |
 | `ProjectileFactory` | Turns a `ProjectileDefinition` into a live, pooled projectile — one pool per prefab | **Factory + Object Pool** |
 | `Economy` | Currency & lives | **Observer** (emits changes) |
-| `BuildController` | Place/sell via undoable actions, on a LIFO stack | **Command** |
-| `PlacementRules` | Where a tower may stand, and which tower a tap hit | **none** — a plain class, two queries (§6) |
+| `BuildController` | Place/sell via undoable actions, on a LIFO stack; holds the placement the player has pointed at but not yet bought | **Command** |
+| `PlacementRules` | Where a tower may stand, which tower a tap hit, and whether a tap is the spot already pointed at | **none** — a plain class, three queries (§6) |
+| `PlacementGhost` | Draws the transparent tower between the two taps of a placement | **Observer** — subscribes `PlacementPreviewChanged`, decides nothing |
 | `PointerInputService` | Touch or mouse → world intent | one interface, **one** implementation — see §10 |
 | `HudPresenter` | Listens, renders numbers, the phase and the wave count | **Observer** (subscribes) |
 | `EndScreen` | Shows win/lose, asks for a restart | **Observer** — subscribes `PhaseChanged`, publishes `RestartRequested` |
-| `BuildMenu` | Which tower to build, and undo | **Observer** — subscribes `CurrencyChanged`, publishes intents |
+| `BuildMenu` | Which tower to build — including showing which one is armed — and undo | **Observer** — subscribes `CurrencyChanged`, publishes intents |
 | `Level` | Owns one map's path and its wave sequence. The unit that gets swapped | **none** — a prefab-root component, not an asset (see §7) |
 | `LevelRunner` | Instantiates the current map, destroys the outgoing one, and owns what is derived from it: the placement rules and the baked path | **none** — the third plain class where a service was tempting (§6) |
 | `Bootstrap` | Composition root: builds the pools, factories, economy, wave runner and phase machine from `GameConfig`, sets the frame rate, ticks the machine, reloads the scene on restart | **none** — deliberately not a Service Locator or DI container (§15 declines both) |
@@ -521,9 +534,12 @@ Two things worth recording, because they are the parts that are not obvious:
   is §14's own principle reused ("avoiding exactly that seam for the code that *matters* is why
   `Enemy.Configure` takes `IReadOnlyList<Vector2>`"), and it is why the geometry tests with literal
   coordinates and no scene. It also means `LevelRunner` can build a fresh one per level.
-- **One radius serves both questions.** The distance that blocks a placement is the distance that
-  selects a tower for sale, so the two branches of a tap can never both be true — and there is one
-  number to tune rather than two that can disagree.
+- **One radius serves all three questions.** The distance that blocks a placement is the distance
+  that selects a tower for sale, so those two branches of a tap can never both be true — and §13.6
+  gave the same number a third reader, `IsTheSameSpot`, which is how a second tap confirms the
+  pending placement it is aimed at. A confirm radius of its own would have been a second number to
+  keep in step with this one, and a ghost you could confirm from further away than you could have
+  placed it.
 
 **A plain class is becoming this project's default answer**, which is worth noticing out loud:
 `EnemyRegistry`, `PlacementRules` and `Economy` are all pattern-free, and the patterns that *are*
@@ -621,6 +637,21 @@ alternative. That ratio is the honest signal, not the pattern count.
 - **Where I stopped:** undo does **not** cover combat (you can't un-kill an enemy). Undo is
   scoped to the build phase, where it models a real player affordance ("misclicked, take it back")
   instead of inventing complexity to show off.
+- **§13.6 separated "when can you build" from "when can you undo", and only the second is still the
+  build phase.** Building during a wave is a design fix — a tower defence whose answer to a wave
+  going badly is to watch it go badly is the version nobody plays — but undo could not come with it:
+  rewinding a tower after it has already failed to stop a leak is a refund for an outcome the player
+  has seen. So `BuildController` records to the stack only while an *undo scope* is open, opened by
+  `BuildState.Enter()` and closed by its `Exit()`. With the scope closed a command executes and is
+  retired instead of recorded — which is the same `is SellTowerCommand` check as `ClearHistory`,
+  reused, so a mid-wave sale destroys its tower at once rather than leaving one inactive GameObject
+  per sale waiting for a phase boundary. The alternative was a `phase == Build` check inside the
+  invoker, and it would have put the rule in the one class this section keeps phase-free.
+- **Placement is now two taps, and the pending half is deliberately *not* a command.** A ghost
+  waiting for a confirming tap is exactly the "half-executed command" this section forbids on the
+  stack, so `BuildController` holds it as plain state — a `TowerDefinition` and a `Vector2` — and
+  constructs the command only when the second tap arrives. The confirm re-runs both checks rather
+  than trusting the first tap: currency moves between taps, and during a wave so can the board.
 - **The stack is unbounded, and strictly LIFO.** No `MAX_UNDO_DEPTH`, because the ceiling is the
   number of build actions in a round — a handful — so the constant would be §2's eleventh entry and
   the first with no failure mode to prevent. And no `Undo(int)`: arbitrary-index undo is where a
@@ -894,6 +925,7 @@ ground and some of these should go back to direct references.
 | `PhaseChanged` | `GameStateMachine` | `HudPresenter`, `BuildMenu`, `EndScreen` | new phase enum |
 | `WaveCompleted` | `WaveRunner` | `HudPresenter` (wave counter) | wave index |
 | `BuildActionRequested` | `BuildMenu` | `BuildController`, `BuildState` | action enum, tower |
+| `PlacementPreviewChanged` | `BuildController` | `PlacementGhost` | active flag, position, tower |
 | `RestartRequested` | `EndScreen` | `Bootstrap` | none |
 
 Eight of the ~10 this section budgets for. **The slice most likely to have breached that budget
@@ -931,6 +963,15 @@ draft. Three things about that slice's effect on this table are worth recording:
 
 **Two rows left in the budget, and the discipline is worth restating**: this section's whole
 purpose is that a growing list is the signal the bus is becoming a dumping ground.
+
+**§13.6 spent one of them, on `PlacementPreviewChanged`, and the test it had to pass was the
+`TowerPlaced` test above.** Those two rows were declined for having a publisher and no subscriber.
+This one has a subscriber that cannot be reached any other way: the ghost is a `SpriteRenderer` in
+the world, `BuildController` is a plain class that must stay scene-free to remain testable (§14),
+and a direct reference from the invoker to a `MonoBehaviour` is the seam this bus exists to keep.
+It is also the first row published by Gameplay *for* a presentation consumer in the same assembly,
+which is worth noting rather than hiding: the seam it protects here is plain-class-to-scene-object,
+not §3's assembly boundary. **One row left in the budget.**
 
 **One row moved rather than being added, and that is the more interesting change.**
 `CurrencyChanged`'s second consumer was `BuildController (afford check)` and is now `BuildMenu`.
@@ -994,6 +1035,13 @@ Discrete, rare facts (a death, a phase change) use Observer. Continuous, per-fra
 relationships use polling. The dividing line — *event frequency vs. subscriber count* — is
 stated so the choice looks reasoned.
 
+**The placement ghost is the dividing line applied to something that looks continuous and is not.**
+A transparent tower that follows the player's intent sounds like a per-frame job, so `PlacementGhost`
+reading `BuildController.Pending` from an `Update` would be the obvious build. It moves twice a
+round: once when a tap arms it and once when a tap or a phase exit clears it. So it is an event
+(`PlacementPreviewChanged`) and the renderer has no `Update` at all — the same reasoning as the
+tower scan, reaching the opposite answer because the frequency is the opposite.
+
 ### Who calls `Tick` — a third explicit decision
 
 **Enemies are ticked by the composition root, not by their own `Update`.** `Bootstrap.Update`
@@ -1023,6 +1071,13 @@ tower added or removed this frame was settled before anything iterated the list,
 combat now run in *different phases* and therefore never in the same frame. The ordering rule was
 replaced by a stronger guarantee, not dropped.
 
+**§13.6 took that stronger guarantee away again, so the ordering rule is back.** Building during a
+wave means build and combat *do* share a frame, and `WaveState.Tick` is now `build.Tick()`, then
+enemies, then towers, then projectiles — the original five-call order, restored with its original
+justification: a tower bought or sold this frame is settled before `TickTowers` iterates the list it
+is in. Worth being plain about the shape of this: the guarantee was real while it lasted, and a
+feature removed it. The ordering rule is the version that survives both.
+
 *Why `BuildState` ticks projectiles at all:* a wave is cleared when the last enemy dies, which can
 leave a shot mid-air. Without it that projectile would hang there, frozen, until the next wave
 started, and never return to its pool.
@@ -1038,6 +1093,16 @@ this section.** The "pausing is free" argument was made for enemies and predicte
 bounded, named way — one allocation per player tap. When `BuildState` lands, it stops by simply not
 calling `build.Tick()`, with **no change to any of this code**. A `bool buildingAllowed` flag that
 nothing sets would have been worse than no flag at all.
+
+**That repair held for three slices and §13.6 undid it on purpose.** `WaveState` calls
+`build.Tick()`, so §10's "no `Instantiate` during a wave" is broken again — and this time not as an
+interim state but as the design. The cost is stated rather than argued away: one `Instantiate` of
+one tower per *confirmed* placement, at most a handful per wave because currency bounds it, and only
+ever on a frame the player has tapped twice on. Not the per-enemy churn that rule was written to
+stop. The rule keeps its teeth where it matters, which is that **nothing the game itself does**
+allocates mid-wave — enemies and projectiles are still pooled, and no code path allocates without a
+player tap behind it. Restoring the absolute version would mean taking mid-wave building away, which
+is the feature.
 
 A third payoff, unanticipated: **removing a tower from `Level`'s list — not `SetActive(false)` — is
 what actually stops it firing**, because `Bootstrap` drives towers from that list. The driven tick
@@ -1112,6 +1177,15 @@ a registry. Those are the same ten lines `WaveRunner` inherits.
   is `ClearHistory` and one constructor argument, neither of which is about gating, and there is no
   `bool buildingAllowed` anywhere — the gate is which state ticks it. Kept rather than deleted
   because a prediction that held is worth more on the page than a clean sheet.
+- **§13.6 broke it again, and this time permanently, because the alternative was a worse game.**
+  Building during a wave is now the design (§4, §9), so a tower is `Instantiate`d on any frame the
+  player confirms a placement on. This is a deliberate amendment to the budget above rather than a
+  regression: the invariant that still holds — and the one the prewarm figures were sized for — is
+  **zero allocation from anything the game does on its own**. Enemies and projectiles stay pooled,
+  nothing allocates in a tick the player did not tap in, and the ceiling is a handful per wave
+  because currency bounds it. What certifies it is unchanged: a clean console across a full wave.
+  Towers are still not pooled (§6) and this does not change that argument — a per-round handful,
+  now bought at slightly less convenient moments, is still a handful.
 - **The sprite atlas now exists — the named trigger fired.** It was deliberately deferred while
   one enemy sprite and one background gave batching nothing to merge; the tower slice put a
   soldier, a tower and a projectile on screen together, so it was authored:
@@ -1191,7 +1265,7 @@ Assets/
       Waves/        WaveRunner.cs, WaveDefinition.cs
       Economy/      Economy.cs
       Build/        BuildController.cs, PlacementRules.cs, PlaceTowerCommand.cs,
-                    SellTowerCommand.cs, BuildEvents.cs
+                    SellTowerCommand.cs, BuildEvents.cs, PlacementGhost.cs
       Input/        PointerInputService.cs
     UI/             (MobileDemo.UI.asmdef)
       HudPresenter.cs, BuildMenu.cs, EndScreen.cs
@@ -1465,6 +1539,18 @@ excluded here, only described as if it were. It is now written (§13.5). The poo
 unchanged: `PoolOverlay` and a pool registry are still out, and `IPoolStats` still exists for a tool
 that does not. `UpgradeTowerCommand`, redo, a `TowerRegistry` and authored build plots remain
 deferrals with named triggers, none of which this slice touched.
+
+**§13.6 is the first slice to *un-ship* something this list once tracked.** "Phase-gated building"
+was a deferral with a trigger in §13.2, shipped in §13.3, and is now deliberately half-undone:
+building is allowed in `Build` and `Wave`, and gated out of `Victory` and `Defeat` by the same
+mechanism as before. Recorded here rather than quietly dropped, because a reader who remembers the
+§13.2 entry would otherwise think the gate was lost rather than narrowed — §4 and §10 carry the
+decision and its cost. It also removed the last authored towers from the three maps, which was never
+a §12 item and is worth naming for the same reason: `Level.towers` remains, unused by every shipped
+map, as the contract a tutorial level would use (see [systems/level.md](systems/level.md)). Two new
+deferrals arrived with their triggers, both in [systems/placement-ghost.md](systems/placement-ghost.md):
+a range circle on the ghost, and any feedback on a rejected tap — the latter still PrimeTween's
+(§15). `UpgradeTowerCommand`, redo, a `TowerRegistry` and authored build plots are untouched.
 
 The prewarm retune (§2) is worth one line here because it looks like it should belong: it is not a
 scope change at all. Both numbers were always in scope and always readable from `GameConfig`; what
@@ -2124,6 +2210,11 @@ towers, `SellTowerCommand` exists, and map 1's four waves carry 50 leak damage a
 the session sells both towers in the opening build phase, builds nothing back, and starts waves.
 Lives went 20 → 14 → 6 → 0, and `Defeat` arrived during wave 3.
 
+*(§13.6 removed those two towers from every map, so this exact route is gone — the recorded run
+above still stands as evidence, and the cheap route to `Defeat` is now simply to build nothing,
+which is the opening state rather than an action. Left as written because what it certified was the
+transition, not the towers.)*
+
 That is stronger evidence than a tuning change would have produced, because the loss came from
 player actions running through the real commands rather than from arithmetic arranged to fail. It
 also means the difficulty ramp was free to be judged on whether the game is *good*, with the
@@ -2222,6 +2313,115 @@ the new road is a manual check, and it has not been done.
 
 ---
 
+## 13.6 Seventh slice — the towers become the player's — **done; certified by tests and compile, unseen by a human**
+
+Three player-facing changes, and one of them is a design reversal rather than a feature:
+
+- **The three maps no longer come with towers.** All three `towers` arrays are empty; every tower on
+  the board is bought. See [systems/level.md](systems/level.md).
+- **A placement takes two taps, with a transparent tower in between.** The first tap arms a pending
+  placement and publishes `PlacementPreviewChanged`; `PlacementGhost` draws it; the second tap on
+  that spot buys it. See [systems/placement-ghost.md](systems/placement-ghost.md).
+- **Towers can be bought during a wave**, which reopens §10's allocation budget on purpose (§10
+  carries the amended invariant) and forced the undo question below.
+- **`BuildMenu` shows which type is armed**, by tinting the button's own image.
+
+### What it makes real, rather than asserted
+
+- **§4's structural build gate survived a feature that widened it.** Building in two phases instead
+  of one is one more `build.Tick()` call site and no phase check anywhere.
+- **"Which states tick it" answers *when you can build* but not *when you can undo*.** A tick is per
+  frame; undo is per phase. So `BuildState` opens and closes an undo scope, and §6's Command entry
+  now separates the two rules explicitly.
+- **§9's dividing line got a second worked example, on the other side of it.** The ghost looks like
+  a per-frame follow and moves twice a round, so it is an event and its renderer has no `Update`.
+- **§8's row budget is spent down to one**, and the new row had to pass the test that declined
+  `TowerPlaced`: a subscriber unreachable any other way.
+
+### The insight the slice turned on
+
+**The ghost's state belongs to the invoker; only its pixels belong to a `MonoBehaviour`.** The
+tempting build is a `PlacementGhost` that holds `BuildController` and reads `Pending` each frame —
+one class, no event, no bus row spent. It would also have moved the whole two-tap flow behind a
+scene object, and §14's claim that the build path tests with no scene is worth more than a saved
+event: the pending state, the confirm's re-validation, the cancel routes and the undo scope are all
+asserted by fixtures precisely because they live in a plain class. What is left in the
+`MonoBehaviour` is three lines — sprite, position, `enabled` — and that is the only part no test
+covers.
+
+**The second-order effect is what makes it worth recording.** Because pending is plain state, a
+*confirm* is a fresh validation rather than a replay — which is what makes mid-wave building safe.
+The board can change between the two taps now, so the confirm asks `IsLegal` and the afford check
+again, and `Tick_ConfirmingASpotSomethingElseTook_PlacesNothing` is the test that would have been
+impossible to write against a ghost that owned its own truth.
+
+### Certified, and by what
+
+- **295 EditMode tests green** (280 before), through `Tools/unity.ps1 -Tests`. The 15 new ones are
+  the two-tap flow, the confirm's re-validation, the cancel routes and the undo scope — see §14.
+- **All five assemblies compile** (`dotnet build`, the test assembly included), and
+  **`Tools/lint.ps1` is clean** across all five.
+- **The scene edit is one object and nothing else.** `GhostAuthoring.Run` added `PlacementGhost`
+  under `PoolRoot` — a `SpriteRenderer` at order 6, disabled, plus the component — so the diff to
+  `Gameplay.unity` is that object plus `BuildMenu`'s two new tint fields. `ProjectSettings.asset` is
+  clean, which is the sixth slice where that had to be checked (TRAP 2 in `Tools/unity.ps1`).
+- **The one-shot is idempotent, proven by running it twice**, then deleted per §11. Second run:
+  `PlacementGhost already exists. Nothing to do.`, and a byte-identical scene diff.
+
+### What is *not* certified, and it is more than usual
+
+**Nobody has seen this on screen.** Every previous slice closed with a scripted session; this one
+cannot, and the reason is the one §13.2 recorded — a CLI-launched editor is unfocused, so the Input
+System discards the `wasPressedThisFrame` edge before the player loop reads it. The session drivers
+worked around that by *replacing* `IInputService` with a tap queue, which is exactly the seam this
+slice's new behaviour sits **above**: a queue driving `BuildController.Tick()` twice would prove the
+two-tap dispatch that 295 tests already prove, and would say nothing about whether a transparent
+tower appears under a finger. What a driver cannot fake is the half that is new here — a
+`SpriteRenderer` toggling on the frame after a real press, at the tapped position, over the map art.
+
+So the honest statement is narrower than every slice before it: **the logic is tested, the scene
+object exists and is wired, and the visual has never rendered.** Four things a human check should
+look at, in the editor, in order — the armed button tinted, a ghost appearing under the first tap,
+the second tap buying it, and Go-then-tap building mid-wave with Undo greyed.
+
+### The three things this slice cost
+
+**A third reader for one radius, and it had to be `PlacementRules`' rather than
+`BuildController`'s.** The confirm needs "is this tap the spot I pointed at", which is the spacing
+again — but the spacing lives in the rules object, built per level by `LevelRunner`. Passing the
+float into the invoker as a seventh constructor argument would have put a rule's number in the class
+whose job is to *ask* about rules, so `IsTheSameSpot` is a third one-line query on `PlacementRules`
+(§6).
+
+**`Retire` exists because a sale with no undo stack has nowhere to hand its tower.** The
+`is SellTowerCommand → Discard()` check that `ClearHistory` owned is now a private static with two
+callers, since a mid-wave sale has to destroy its tower immediately rather than leave one
+deactivated GameObject alive until the next phase boundary. One extracted method, and §6's argument
+against an `IDiscardable` is unchanged by having two call sites instead of one.
+
+**Every build fixture that placed a tower with one tap had to learn to tap twice** — 15 call sites
+across `BuildControllerTests` and `BuildStateTests`, reduced to one `ConfirmAt` helper each.
+`VictoryStateTests` also gained a real `BuildController` for `WaveState`'s new argument rather than
+a null: a no-op in that fixture, but an honest one.
+
+### What this slice deliberately did *not* do
+
+- **No range circle on the ghost, and no red illegal state.** The trigger for the first is the first
+  player question the ghost cannot answer; the second is unreachable state today, because a pending
+  placement exists only where a purchase was legal.
+- **No Cancel button.** Re-tapping a tower button is the dismiss gesture. A button would be scene
+  work for an affordance the menu already has.
+- **No drag-to-place.** It would need `IInputService` to grow press/move/release — a third member on
+  an interface §10 defends as minimal — and a two-tap flow is what a thumb can do without occluding
+  the spot it is choosing.
+- **No undo during a wave.** Rewinding a tower after it has failed to stop a leak is a refund for an
+  outcome the player has already watched.
+- **No `UpgradeTowerCommand`.** §7's trigger is still a per-tower UI, and a ghost is not one.
+- **No tower pooling**, despite `Instantiate` now happening mid-wave. §6's argument is a per-round
+  handful, and it is still a per-round handful.
+
+---
+
 ## 14. Testing (lightweight, but present)
 
 EditMode tests where they're cheap and meaningful — exactly the seams the patterns created:
@@ -2287,6 +2487,20 @@ asset.** Every one builds its definitions with `ScriptableObject.CreateInstance`
 `SerializedFields`, so retuning the shipping game cannot break a test — and, in the same breath,
 cannot be *validated* by one either. Those 280 tests say the systems are right; only a play session
 can say the numbers are.
+
+**§13.6 added no fixture and 15 cases, taking the suite to 295** — the two-tap placement flow
+(arm, move, confirm, and confirm-refused when the currency or the spot has gone), the cancel routes,
+and the undo scope in both positions. They live in the fixtures that already existed because the
+behaviour did too: `BuildControllerTests` is the file that had to learn that one tap no longer buys
+anything. Two things worth recording about them:
+
+- **The published preview is asserted as a *sequence*, not a final state** — one `Active: true` when
+  a tap arms a placement, one `Active: false` on the confirm or the cancel, and *nothing at all* when
+  a rejected tap changes nothing. That last one is the assertion with teeth: it is what stops a
+  future "just publish on every tick" from passing.
+- **`PlacementGhost` itself has no fixture, and that is the boundary rather than an omission.** Its
+  whole body is `spriteRenderer.sprite`, a transform write and `enabled` — the half EditMode cannot
+  see, for `HudPresenter`'s reason. Everything that *decides* for it is a plain class and is tested.
 
 **`PathEditor` is deliberately untested, and the reasoning is `EnemyPath`'s own, one paragraph
 down.** Testing it from `MobileDemo.Tests.EditMode` would mean adding a reference to

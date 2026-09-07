@@ -37,6 +37,22 @@ namespace MobileDemo.Gameplay.Build
         // ICommand that lets Undo return void.
         readonly List<ICommand> history = new List<ICommand>();
 
+        // The half-made placement: what the player pointed at, and where. Held as state here
+        // rather than as a half-built PlaceTowerCommand, because §6 is explicit that no
+        // half-executed command reaches the stack -- an armed command waiting for a second tap
+        // would be exactly that, and the confirm has to re-validate anyway.
+        //
+        // Two fields rather than a small PendingPlacement struct: the definition doubles as the
+        // "is anything pending" flag, so a struct would need a third bool to say the same thing.
+        TowerDefinition pending;
+        Vector2 pendingPosition;
+
+        // Whether a command that runs now can still be undone. Opened and closed by the phase, so
+        // this class still contains no phase check and no reference to GamePhase -- the rule is
+        // owned by whoever ticks it. Opens true because a controller that has never been told is
+        // one nothing has taken the undo button away from yet.
+        bool recordsUndo = true;
+
         public BuildController(
             IInputService input, Economy economy, LevelRunner levels, TowerFactory towers,
             TowerCatalogue catalogue, float sellRefundFraction)
@@ -60,6 +76,11 @@ namespace MobileDemo.Gameplay.Build
 
         public int UndoDepth => history.Count;
 
+        /// <summary>The type waiting on a confirming tap, or null if nothing is pending.</summary>
+        public TowerDefinition Pending => pending;
+
+        public Vector2 PendingPosition => pendingPosition;
+
         // Called by the owning MonoBehaviour's OnEnable/OnDisable -- a plain object has neither,
         // and the bus holds a strong reference until unsubscribed. Economy's pattern, and the
         // method group is load-bearing for the same reason: a lambda would remove nothing.
@@ -71,9 +92,15 @@ namespace MobileDemo.Gameplay.Build
         // absence is deliberate rather than an oversight: a parameter with no reader is exactly
         // what §2's discipline rejects.
         //
-        // It also means building pauses by simply not being called, which is what makes the
-        // still-absent phase machine cost nothing -- §9's driven-tick decision acquiring a second
-        // beneficiary after pausing enemies.
+        // It also means building pauses by simply not being called, which is what makes the phase
+        // machine cost nothing -- §9's driven-tick decision acquiring a second beneficiary after
+        // pausing enemies. BuildState and WaveState both call this; VictoryState and DefeatState do
+        // not, which is the whole of the gate.
+        //
+        // A tap no longer buys anything on its own. The first one on legal ground arms a pending
+        // placement and says so on the bus; a second tap on that spot is what spends. Two taps
+        // rather than a drag because there is no hover on a touch screen: a ghost has to be put
+        // somewhere before it can be looked at.
         public void Tick()
         {
             if (!input.TryGetTap(out Vector2 world))
@@ -90,18 +117,36 @@ namespace MobileDemo.Gameplay.Build
                 return;
             }
 
+            // The confirm is tested before the sell, which is one more rung on the same ladder the
+            // sell-before-legality note below describes. A pending ghost stands on legal ground, so
+            // it is already a full spacing clear of every tower -- but a tap between the two can
+            // still be inside both radii, and there the player's own pending intent wins over a
+            // reading of the same tap as "sell that one".
+            if (pending != null && rules.IsTheSameSpot(world, pendingPosition))
+            {
+                Confirm(level, rules);
+                return;
+            }
+
             // Sell is checked before legality, so a tap on an existing tower can never be
             // misread as an illegal placement. PlacementRules shares one radius between the two
             // questions, so exactly one branch can be true.
             Tower existing = rules.FindTowerAt(world, level.Towers);
             if (existing != null)
             {
+                // Selling is the answer to this tap, so the ghost the player left somewhere else is
+                // no longer what they are doing.
+                CancelPending();
                 Run(new SellTowerCommand(towers, level, economy, existing, sellRefundFraction));
                 return;
             }
 
             // Every rejection below is silent. The HUD is the feedback -- currency simply does not
             // move -- and a rejected-tap flash is PrimeTween's job, which is not installed (§15).
+            //
+            // A rejected tap also leaves an existing pending placement alone rather than clearing
+            // it: a mistap near the road would otherwise throw away the ghost the player had
+            // already positioned, which is a worse answer than doing nothing.
             if (Selected == null || !rules.IsLegal(world, level.Towers))
             {
                 return;
@@ -110,12 +155,40 @@ namespace MobileDemo.Gameplay.Build
             // The afford check, asked of Economy directly rather than cached from CurrencyChanged.
             // Subscribing to mirror a number this class can already read would be Observer where a
             // plain reference is correct, and a second source of truth for the balance.
+            //
+            // Asked here as well as at the confirm, so no ghost ever appears for a tower the player
+            // cannot buy.
             if (economy.Currency < Selected.Cost)
             {
                 return;
             }
 
-            Run(new PlaceTowerCommand(towers, level, economy, Selected, world));
+            Arm(Selected, world);
+        }
+
+        // Idempotent, and it publishes only when something actually went away -- a Cancel on every
+        // phase exit would otherwise put an event on the bus for most of the round's transitions.
+        public void CancelPending()
+        {
+            if (pending == null)
+            {
+                return;
+            }
+
+            pending = null;
+            EventBus<PlacementPreviewChanged>.Publish(
+                new PlacementPreviewChanged(false, Vector2.zero, null));
+        }
+
+        // Called from BuildState.Enter/Exit. The pair exists rather than a settable property so the
+        // close can do both halves of its job in one call: stop recording, and hand back the towers
+        // the stack still owns.
+        public void OpenUndoScope() => recordsUndo = true;
+
+        public void CloseUndoScope()
+        {
+            recordsUndo = false;
+            ClearHistory();
         }
 
         public bool Undo()
@@ -132,37 +205,82 @@ namespace MobileDemo.Gameplay.Build
             return true;
         }
 
-        // Called from BuildState.Exit(): once the wave starts, nothing can pop this stack, so
-        // every command on it is permanent and the phase boundary is where that becomes true.
+        // Reached through CloseUndoScope() from BuildState.Exit(): once the wave starts, nothing can
+        // pop this stack, so every command on it is permanent and the phase boundary is where that
+        // becomes true. Still public, and still the method §6 points at.
         //
-        // The `is` check is the whole reason this is not just history.Clear(). A sold tower is
-        // deactivated rather than destroyed, because Undo has to restore the instance rather than
-        // manufacture a replacement -- so its GameObject is alive and owned by this list, and
-        // clearing the list without discarding would leak one inactive tower per sale for the rest
-        // of the round.
-        //
-        // One type test in one place, chosen over an IDiscardable interface with a single
-        // implementer and over a third member on ICommand. §6 is explicit that the interface is
-        // exactly Execute/Undo, and PlaceTowerCommand has nothing to discard: its own Undo already
-        // destroys what it made, and a command left on the stack has *not* been undone, so its
-        // tower is one the player still owns.
+        // Retire is the whole reason this is not just history.Clear(). A sold tower is deactivated
+        // rather than destroyed, because Undo has to restore the instance rather than manufacture a
+        // replacement -- so its GameObject is alive and owned by this list, and clearing the list
+        // without discarding would leak one inactive tower per sale for the rest of the round.
         public void ClearHistory()
         {
             for (int i = 0; i < history.Count; i++)
             {
-                if (history[i] is SellTowerCommand sell)
-                {
-                    sell.Discard();
-                }
+                Retire(history[i]);
             }
 
             history.Clear();
         }
 
+        void Arm(TowerDefinition definition, Vector2 world)
+        {
+            pending = definition;
+            pendingPosition = world;
+            EventBus<PlacementPreviewChanged>.Publish(
+                new PlacementPreviewChanged(true, world, definition));
+        }
+
+        // The pending state is dropped *before* the command runs, so there is no path on which a
+        // placement succeeds and a ghost survives it.
+        //
+        // Both checks are asked again rather than trusted from the arming tap. Currency moves
+        // between the two taps -- another placement, a sale's refund, an undo -- and during a wave
+        // the board does too, since the confirm can arrive after something else has been built.
+        void Confirm(Level level, PlacementRules rules)
+        {
+            TowerDefinition definition = pending;
+            Vector2 position = pendingPosition;
+            CancelPending();
+
+            if (!rules.IsLegal(position, level.Towers) || economy.Currency < definition.Cost)
+            {
+                return;
+            }
+
+            Run(new PlaceTowerCommand(towers, level, economy, definition, position));
+        }
+
+        // Recorded while the undo scope is open, retired immediately when it is not. A command run
+        // with the scope closed is permanent the instant it executes, which is what makes mid-wave
+        // building safe to allow: there is no stack for a wave to have to protect, so nothing has
+        // to check what phase it is.
+        //
+        // Retiring rather than simply dropping matters for the same reason ClearHistory is not
+        // history.Clear() -- a sale deactivates its tower and hands ownership to the stack. With no
+        // stack to hand it to, the sale destroys it now.
         void Run(ICommand command)
         {
             command.Execute();
-            history.Add(command);
+
+            if (recordsUndo)
+            {
+                history.Add(command);
+                return;
+            }
+
+            Retire(command);
+        }
+
+        // One type test in one place, now with two callers. §6 is explicit that ICommand is exactly
+        // Execute/Undo, and PlaceTowerCommand has nothing to retire: its own Undo already destroys
+        // what it made, and a command that was never undone made a tower the player still owns.
+        static void Retire(ICommand command)
+        {
+            if (command is SellTowerCommand sell)
+            {
+                sell.Discard();
+            }
         }
 
         // BuildAction.StartWave is deliberately absent, and there is no default. It travels this
@@ -180,6 +298,12 @@ namespace MobileDemo.Gameplay.Build
                     if (evt.Tower != null)
                     {
                         Selected = evt.Tower;
+
+                        // Re-tapping a tower button is also the dismiss gesture, because there is
+                        // no Cancel button and a ghost the player has stopped wanting has to be
+                        // clearable somehow. Cancelling on every select rather than only on a
+                        // *changed* select is what makes tapping the armed type mean "start over".
+                        CancelPending();
                     }
 
                     break;

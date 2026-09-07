@@ -31,12 +31,28 @@ namespace MobileDemo.UI
         [Tooltip("Ends the build phase. Interactable only during it.")]
         [SerializeField] Button goButton;
 
+        [Tooltip("Applied to the armed tower button's own image.")]
+        [SerializeField] Color selectedTint = new Color(1f, 0.82f, 0.35f);
+
+        [SerializeField] Color normalTint = Color.white;
+
         int currency;
 
         // Opens closed and is opened by the PhaseChanged that Bootstrap.Start publishes, rather
         // than opening true and being corrected. A menu that is live for the frame before the
         // round has a phase is a menu that can start a wave before the machine exists.
-        bool building;
+        //
+        // Two flags rather than one, because the two questions stopped having the same answer:
+        // towers can be bought during a wave, undo and Go still cannot.
+        bool canBuild;
+        bool inBuildPhase;
+
+        // Which button is armed. Opens at 0 to match BuildController, whose constructor seeds
+        // Selected from the catalogue's first entry -- the same fact stated on both sides of §3's
+        // seam, because neither may reference the other and nothing publishes the selection.
+        //
+        // The trigger for making it an event instead: a second thing that can change the selection.
+        int selectedIndex;
 
         void OnEnable()
         {
@@ -59,7 +75,9 @@ namespace MobileDemo.UI
             EventBus<CurrencyChanged>.Subscribe(OnCurrencyChanged);
             EventBus<PhaseChanged>.Subscribe(OnPhaseChanged);
 
-            building = false;
+            canBuild = false;
+            inBuildPhase = false;
+            selectedIndex = 0;
             WriteLabels();
             Refresh();
         }
@@ -98,6 +116,9 @@ namespace MobileDemo.UI
                 return;
             }
 
+            selectedIndex = index;
+            Refresh();
+
             EventBus<BuildActionRequested>.Publish(
                 new BuildActionRequested(BuildAction.SelectTower, definition));
         }
@@ -122,12 +143,18 @@ namespace MobileDemo.UI
         // as things that will come back.
         //
         // This is presentation only, and deliberately not the enforcement. BuildState stops
-        // listening for StartWave when it exits, and WaveState does not tick BuildController, so
-        // building is already impossible during a wave whatever this class does. Two mechanisms
-        // for the same rule would be one too many if this were the load-bearing one; it is not.
+        // listening for StartWave when it exits, and it closes BuildController's undo scope on the
+        // way out, so Go and Undo are already dead during a wave whatever this class does. Two
+        // mechanisms for the same rule would be one too many if this were the load-bearing one; it
+        // is not.
+        //
+        // The tower buttons are the one place where phase and buildability are now the same
+        // question in both directions: Victory and Defeat tick nothing that builds, and neither
+        // arms a button here.
         void OnPhaseChanged(PhaseChanged evt)
         {
-            building = evt.Phase == GamePhase.Build;
+            inBuildPhase = evt.Phase == GamePhase.Build;
+            canBuild = inBuildPhase || evt.Phase == GamePhase.Wave;
             Refresh();
         }
 
@@ -149,20 +176,35 @@ namespace MobileDemo.UI
             }
         }
 
-        // interactable, not colour: it is one property, it greys the button through the
-        // Button's own disabled tint, and it also stops the click rather than merely discouraging
-        // it -- so an unaffordable tap cannot reach the bus at all.
+        // interactable, not colour, for the afford check: it is one property, it greys the button
+        // through the Button's own disabled tint, and it also stops the click rather than merely
+        // discouraging it -- so an unaffordable tap cannot reach the bus at all.
+        //
+        // The armed tower is colour, and it has to be something else: interactable is already
+        // spoken for, and a player has to be able to see which type a board tap will buy while both
+        // buttons are still buyable. It is written to the button's own image rather than to its
+        // ColorBlock, so the Button's ColorTint transition keeps multiplying its pressed and
+        // disabled states over the top -- "armed" and "cannot afford" are both legible at once.
         void Refresh()
         {
             for (int i = 0; i < towerButtons.Length; i++)
             {
                 TowerDefinition definition = DefinitionAt(i);
                 towerButtons[i].interactable =
-                    building && definition != null && currency >= definition.Cost;
+                    canBuild && definition != null && currency >= definition.Cost;
+
+                if (towerButtons[i].image != null)
+                {
+                    towerButtons[i].image.color = i == selectedIndex ? selectedTint : normalTint;
+                }
             }
 
-            undoButton.interactable = building;
-            goButton.interactable = building;
+            // The narrower gate, and the two reasons differ. Undo is dead outside the build phase
+            // because the stack is: BuildState closes the undo scope on the way out, so a mid-wave
+            // command is permanent the moment it runs. Go is dead because BuildState is the only
+            // subscriber for StartWave and it stops listening when it exits.
+            undoButton.interactable = inBuildPhase;
+            goButton.interactable = inBuildPhase;
         }
 
         TowerDefinition DefinitionAt(int index)

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using MobileDemo.Core.Events;
 using MobileDemo.Core.Interfaces;
 using MobileDemo.Core.Pooling;
+using MobileDemo.Gameplay.Build;
 using MobileDemo.Gameplay.Enemies;
 using MobileDemo.Gameplay.Levels;
 using MobileDemo.Gameplay.Phases;
@@ -76,7 +77,19 @@ namespace MobileDemo.Tests.EditMode
             waves = new WaveRunner(enemies, registry, levels.Waypoints);
 
             machine = new GameStateMachine();
-            waveState = new WaveState(machine, waves, levels, scaffold.Projectiles);
+
+            // WaveState ticks the build controller, because a tower can be bought mid-wave. Nothing
+            // here taps, so it is a no-op -- but it is a real one rather than a null, which is what
+            // keeps these tests honest about the wave tick's actual shape.
+            BuildController builder = new BuildController(
+                new FakeInputService(),
+                scaffold.Economy,
+                levels,
+                scaffold.Towers,
+                scaffold.Catalogue,
+                BuildScaffold.RefundFraction);
+
+            waveState = new WaveState(machine, waves, levels, scaffold.Projectiles, builder);
             build = new NullState();
 
             machine.Add(GamePhase.Build, build);

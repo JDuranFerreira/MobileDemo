@@ -1,5 +1,6 @@
 using MobileDemo.Core.Events;
 using MobileDemo.Gameplay.Towers;
+using UnityEngine;
 
 namespace MobileDemo.Gameplay.Build
 {
@@ -47,6 +48,36 @@ namespace MobileDemo.Gameplay.Build
         public BuildActionRequested(BuildAction action, TowerDefinition tower = null)
         {
             Action = action;
+            Tower = tower;
+        }
+    }
+
+    // Where the tower the player is about to buy would stand, or that there is no longer one. The
+    // second half of a two-tap placement needs something on screen between the taps, and this is
+    // the whole of what the renderer needs to know.
+    //
+    // It lives beside BuildActionRequested for the same reason and travels the other way: that one
+    // is the UI's one route into Gameplay, this one is the build dispatch reporting a decision it
+    // has already made. Published rather than polled because it changes only on a tap -- §9's rule,
+    // and a ghost re-positioned from Update would be a per-frame read of a value that moves twice a
+    // round.
+    //
+    // Also declared here rather than in Core's GameEvents.cs, and for the same reason as its
+    // neighbour: TowerDefinition is a MobileDemo.Gameplay type.
+    public readonly struct PlacementPreviewChanged : IEvent
+    {
+        public readonly bool Active;
+
+        /// <summary>Meaningless when <see cref="Active"/> is false.</summary>
+        public readonly Vector2 Position;
+
+        /// <summary>Null when <see cref="Active"/> is false.</summary>
+        public readonly TowerDefinition Tower;
+
+        public PlacementPreviewChanged(bool active, Vector2 position, TowerDefinition tower)
+        {
+            Active = active;
+            Position = position;
             Tower = tower;
         }
     }

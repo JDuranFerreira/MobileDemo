@@ -34,6 +34,13 @@ namespace MobileDemo.Gameplay.Build
             return IsOnTheBoard(world) && IsClearOfTheRoad(world) && IsClearOfTowers(world, towers);
         }
 
+        // The third question the one radius answers: is this tap the spot the player already
+        // pointed at? A pending placement is confirmed by a second tap on it, and letting that use
+        // the spacing means the ghost is confirmed over exactly the footprint it is asking for --
+        // no second radius to keep in step with this one.
+        public bool IsTheSameSpot(Vector2 world, Vector2 spot) =>
+            (world - spot).sqrMagnitude <= towerSpacing * towerSpacing;
+
         // The radius that blocks a placement is the radius that selects a tower for sale, so the
         // two branches of a tap can never both be true. Nearest wins, not first, or two towers
         // within a spacing of each other would make the selection depend on array order.

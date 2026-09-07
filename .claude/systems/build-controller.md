@@ -7,9 +7,13 @@ rule about interfaces that serve one type, applied to a helper).
 
 ## Responsibility
 
-Turn a tap into the right build action, and keep those actions undoable. Concretely: read one tap
-per frame, decide whether it sells an existing tower or places a new one, validate, construct the
-command, execute it, and push it onto a LIFO stack.
+Turn a tap into the right build action, and keep those actions undoable *while the phase that owns
+undo is running*. Concretely: read one tap per frame, decide whether it confirms a pending
+placement, sells an existing tower or arms a new placement, validate, construct the command,
+execute it, and push it onto a LIFO stack — or retire it on the spot, if the undo scope is closed.
+
+A placement takes two taps. The first arms a **pending placement** — plain state, and announced on
+the bus so [`PlacementGhost`](placement-ghost.md) can draw it — and the second buys it.
 
 It deliberately does **not**:
 
@@ -21,7 +25,12 @@ It deliberately does **not**:
   button it cannot afford.
 - **Own the towers.** [`Level`](level.md) holds the live set;
   [`TowerFactory`](tower-factory.md) instantiates.
-- **Know about phases.** Building is allowed at all times. See Gotchas.
+- **Know about phases.** It holds no `GamePhase` and asks nothing about one. Building happens in
+  the phases that tick it — `Build` and, since §13.6, `Wave` — and undo happens while a phase has
+  opened its undo scope. Both rules are told to it; neither is checked by it. See Gotchas.
+- **Draw anything.** The ghost is a published fact
+  (`PlacementPreviewChanged`) and [`PlacementGhost`](placement-ghost.md) renders it. That is what
+  keeps this a plain class with a two-tap flow a fixture can drive.
 - **Give feedback on a rejection.** Every rejected tap is silent. §15's PrimeTween owns the flash,
   and it is not installed.
 - **Be a MonoBehaviour.** Which is what makes §14's "these pass without a scene" true for it.
@@ -33,8 +42,8 @@ It deliberately does **not**:
 | Type | File | Role |
 |---|---|---|
 | `ICommand` | [ICommand.cs](../../Assets/Scripts/Core/Interfaces/ICommand.cs) | `Execute` / `Undo`. Two methods, no `CanUndo` — see Gotchas. |
-| `BuildController` | [BuildController.cs](../../Assets/Scripts/Gameplay/Build/BuildController.cs) | The invoker. `Tick()`, `Undo()`, `Selected`, `UndoDepth`. |
-| `PlacementRules` | [PlacementRules.cs](../../Assets/Scripts/Gameplay/Build/PlacementRules.cs) | `IsLegal` and `FindTowerAt`. |
+| `BuildController` | [BuildController.cs](../../Assets/Scripts/Gameplay/Build/BuildController.cs) | The invoker. `Tick()`, `Undo()`, `Selected`, `UndoDepth`, `Pending`, `CancelPending()`, `OpenUndoScope()`/`CloseUndoScope()`. |
+| `PlacementRules` | [PlacementRules.cs](../../Assets/Scripts/Gameplay/Build/PlacementRules.cs) | `IsLegal`, `FindTowerAt` and `IsTheSameSpot` — three questions, one radius. |
 | `PlaceTowerCommand` | [PlaceTowerCommand.cs](../../Assets/Scripts/Gameplay/Build/PlaceTowerCommand.cs) | Spends, instantiates, adds. Undo destroys and refunds in full. |
 | `SellTowerCommand` | [SellTowerCommand.cs](../../Assets/Scripts/Gameplay/Build/SellTowerCommand.cs) | Removes, deactivates, refunds a fraction. |
 | `BuildActionRequested` | [BuildEvents.cs](../../Assets/Scripts/Gameplay/Build/BuildEvents.cs) | The UI's one route in. |
@@ -61,7 +70,8 @@ rule per class would be three classes to express three `if`s.
 | Reads | [`IInputService`](input-service.md), [`Economy`](economy.md), [`LevelRunner`](level-runner.md) — and through it the live [`Level`](level.md) and its `PlacementRules` — `TowerCatalogue`, `TowerDefinition.Cost` |
 | Calls | `Economy.TrySpend`/`Refund`, `Level.AddTower`/`RemoveTower`, [`TowerFactory.Create`](tower-factory.md) |
 | Subscribes | `BuildActionRequested` — raised by `BuildMenu` |
-| Publishes | **nothing.** The commands move currency; `Economy` announces it |
+| Publishes | `PlacementPreviewChanged`. Currency is still not its to announce: the commands move it and `Economy` says so |
+| Ticked by | [`BuildState`](game-state-machine.md) **and `WaveState`** — the two phases you can build in |
 | Constructed by | [`Bootstrap`](bootstrap.md), in `Start` — see Gotchas |
 
 **§13.4 replaced two constructor arguments with one**, and the reason is the level swap: the
@@ -96,11 +106,12 @@ the refund fraction is a run rule rather than a per-tower one.
   `[Place, Sell]` breaks — undoing the sell yields a new instance, so undoing the place beneath it
   destroys a stale reference and leaves a free tower on the board. The cost is that a sold tower's
   GameObject stays alive, inactive, owned by the undo stack — until the phase ends.
-- **`ClearHistory()` is what ends that ownership, and `BuildState.Exit()` is what calls it.** Once
+- **`ClearHistory()` is what ends that ownership, and `BuildState.Exit()` reaches it through
+  `CloseUndoScope()`.** Once
   the wave starts nothing can pop the stack, so every command on it is permanent; a sale that can
   no longer be undone has no owner left, and `SellTowerCommand.Discard()` destroys its tower. The
   interim rule this guide used to record — "nothing clears the stack" — is gone.
-- **The discard is one `is SellTowerCommand` check, not an interface.** §6 stakes real weight on
+- **The discard is one `is SellTowerCommand` check in `Retire`, not an interface.** §6 stakes real weight on
   `ICommand` being exactly `Execute`/`Undo`, and a third member would have to be answered by
   `PlaceTowerCommand`, for which it means nothing: its own `Undo` already destroys what it made, and
   a placement still *on* the stack is a tower the player owns and is looking at. An `IDiscardable`
@@ -119,10 +130,30 @@ the refund fraction is a run rule rather than a per-tower one.
 - **The road check projects onto each *segment*, clamped**, not onto the nearer waypoint. The
   failure mode of the waypoint version is not at corners — where the nearest point on both
   adjoining segments *is* the corner — but mid-segment, beside the middle of a long straight run.
-- **Building is blocked during a wave, and this class contains no code that does it.** `BuildState`
-  ticks it; `WaveState` does not. §10's "no `Instantiate` during a wave" violation is repaired, and
-  §9's prediction that it would repair itself "with no change to any of this code" held exactly —
-  the diff to this file is `ClearHistory` and one constructor argument, neither about gating.
+- **Building is allowed during a wave, and this class still contains no code about phases.** Both
+  `BuildState.Tick` and `WaveState.Tick` call `Tick()`; `VictoryState` and `DefeatState` do not, so
+  the board is inert on the end screen for the same structural reason it was inert mid-wave before.
+  §13.6 reopened §10's "no `Instantiate` during a wave" deliberately — one tower per confirmed
+  placement, bounded by currency — and §10 records the amended invariant.
+- **Undo is a scope the phase opens, and mid-wave commands are permanent the instant they run.**
+  `BuildState.Enter()` calls `OpenUndoScope()`, `Exit()` calls `CloseUndoScope()`. With the scope
+  closed, `Run` executes the command and *retires* it instead of recording it — the same
+  `is SellTowerCommand → Discard()` check as `ClearHistory`, which is why a mid-wave sale destroys
+  its tower at once rather than leaving one inactive GameObject alive until the next phase boundary.
+  The alternative was a `phase == Build` check in this class, which is the one thing it does not do.
+- **A pending placement is not a command, and that is the rule rather than an omission.** §6 forbids
+  a half-executed command reaching the stack, and an armed `PlaceTowerCommand` waiting for a second
+  tap would be exactly that. So `pending` is a `TowerDefinition` plus a `Vector2`, and the command is
+  constructed at the confirm.
+- **The confirm re-validates legality and affordability.** Both can change between the taps: a
+  refund or another purchase moves currency, and during a wave the board can change too. The
+  refused confirm still clears the ghost.
+- **The tap ladder is confirm, then sell, then place, and the order is load-bearing.** A ghost sits
+  on legal ground so it is a full spacing clear of every tower — but a tap between a ghost and a
+  tower is inside both radii, and there the pending intent wins. A rejected tap leaves the ghost
+  where it is; only a sale, a confirm, a `SelectTower` or a phase exit clears it.
+- **Re-tapping a tower button is the dismiss gesture**, because there is no Cancel button.
+  `SelectTower` cancels on every select, not only on a changed one.
 - **`BuildAction.StartWave` reaches `OnBuildActionRequested` and is deliberately unhandled**, with
   no `default`. It travels this event because §8 chose one enum over three, but its receiver is
   `BuildState`. Two subscribers owning disjoint values of one enum is the shape that choice implies.
@@ -130,9 +161,10 @@ the refund fraction is a run rule rather than a per-tower one.
 ## Status
 
 **Implemented and fully unit-tested; one link still unproven on screen.** `BuildControllerTests`
-(20), `PlaceTowerCommandTests` (8), `SellTowerCommandTests` (10), `PlacementRulesTests` (13) and
-`BuildStateTests` (9) pass as part of a 256-test suite, and the whole dispatch — tap, hit-test,
-validate, choose a command, push, undo, clear — runs through `FakeInputService` with no scene.
+(32), `PlaceTowerCommandTests` (8), `SellTowerCommandTests` (10), `PlacementRulesTests` (14) and
+`BuildStateTests` (12) pass as part of a 295-test suite, and the whole dispatch — tap, hit-test,
+arm, confirm, re-validate, choose a command, record or retire, undo, clear — runs through
+`FakeInputService` with no scene.
 
 **What no run has shown is a real press arriving.** Six scripted play sessions failed to deliver a
 synthesized tap: the press reaches the device at the right position and

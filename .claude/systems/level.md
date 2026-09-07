@@ -95,9 +95,20 @@ seeds a runtime `List<Tower>` on first access and is never written to afterwards
 selling an authored tower does not edit the prefab. `RemoveTower_LeavesTheSerializedArrayAlone`
 pins that.
 
-**Towers belong to the level, not to the scene**, because where a tower stands is map-specific:
-each of the three prefabs will carry its own. It also means a swap brings its own towers and takes
-the old ones with it, which is correct — unlike `PoolRoot`, below.
+**Towers belong to the level, not to the scene**, because where a tower stands is map-specific. It
+also means a swap brings its own towers and takes the old ones with it, which is correct — unlike
+`PoolRoot`, below.
+
+**And as of §13.6 no shipped map carries an authored tower: all three arrays are empty.** Every
+tower on the board is one the player bought. The two per map were scaffolding from §13.1, when
+nothing could be built and a map with no defence was a map with nothing to look at — and they
+outlived their reason by four slices. `towers`, `LevelRunner.ConfigureTowers` and
+`LevelRunner.CollectProjectileDefinitions` all stay: they are the contract for an authored tower,
+they cost nothing while the arrays are empty, and a tutorial map that hands the player a first
+tower is exactly the thing that would use them again. What *did* change with the emptying is where
+the projectile pools come from — the catalogue's half of `Bootstrap.CollectProjectileDefinitions`
+is now the only half that contributes, so a buildable type whose projectile is missing from
+`TowerCatalogue` is the one remaining way to get a silent non-firing tower (§7).
 
 **That last sentence is also why the live list lives here rather than in a `TowerRegistry`.** The
 lifetime requirement points the *opposite* way from the pooled enemies: a runtime-placed tower
@@ -163,14 +174,16 @@ should die with its level, where a pooled enemy must survive the swap. A registr
 swapped.** `Level` has code, [`LevelRunner`](level-runner.md) instantiates it, and
 `Prefabs/Level_01.prefab` is authored: root `Level`, a `Map` child holding the
 `variant1_riverside_switchback` sprite at order 0, an `EnemyPath` child carrying ten waypoints
-(`Waypoint00`–`Waypoint09`) traced along the road art, and two `Tower` instances — `TowerRed`
-mid-path and `TowerGreen` near the end — with `path` and `towers` assigned inside the prefab. **No instance sits in `Gameplay.unity` any more**: §13.4 removed it, because the runner
+(`Waypoint00`–`Waypoint09`) traced along the road art, and `path` assigned inside the prefab. It
+used to carry two `Tower` instances — `TowerRed` mid-path and `TowerGreen` near the end — and
+§13.6 deleted them: the towers are the player's now, so `towers` is empty. **No instance sits in
+`Gameplay.unity` any more**: §13.4 removed it, because the runner
 instantiates every map and an authored one would be a second, unmanaged level under the first.
 `PoolRoot` is still a scene-root object rather than a level child — the gotcha above, honoured, and
 now load-bearing twice per run.
 
-`Level_02` (coastal hook) and `Level_03` (central lake) are authored, each with its own map art,
-its own traced waypoints and its own two towers.
+`Level_02` (coastal hook) and `Level_03` (central lake) are authored, each with its own map art and
+its own traced waypoints — and, since §13.6, no towers either.
 
 **Each now carries its own wave sequence, which is the difficulty pass §13.3 named and §13.5
 delivered.** `Level_01` keeps `Wave01`–`Wave04`, `Level_02` runs `Wave05`–`Wave08` and `Level_03`
