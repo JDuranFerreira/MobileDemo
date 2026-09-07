@@ -6,7 +6,13 @@ namespace MobileDemo.Gameplay.Build
     public enum BuildAction
     {
         SelectTower,
-        Undo
+        Undo,
+
+        // The third intent this file predicted, arriving exactly as predicted -- a value on the
+        // enum rather than a ninth event. Its consumer is BuildState, not BuildController, which
+        // is what makes the Go button dead during a wave without anything checking the phase: the
+        // state subscribes in Enter and unsubscribes in Exit, so mid-wave nothing is listening.
+        StartWave
     }
 
     // The build UI's one route into Gameplay. §3 leaves exactly one: UI may not be referenced by

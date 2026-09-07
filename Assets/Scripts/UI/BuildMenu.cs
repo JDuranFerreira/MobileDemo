@@ -28,7 +28,15 @@ namespace MobileDemo.UI
         [SerializeField] TMP_Text[] towerLabels;
         [SerializeField] Button undoButton;
 
+        [Tooltip("Ends the build phase. Interactable only during it.")]
+        [SerializeField] Button goButton;
+
         int currency;
+
+        // Opens closed and is opened by the PhaseChanged that Bootstrap.Start publishes, rather
+        // than opening true and being corrected. A menu that is live for the frame before the
+        // round has a phase is a menu that can start a wave before the machine exists.
+        bool building;
 
         void OnEnable()
         {
@@ -47,8 +55,11 @@ namespace MobileDemo.UI
             }
 
             undoButton.onClick.AddListener(RequestUndo);
+            goButton.onClick.AddListener(RequestStartWave);
             EventBus<CurrencyChanged>.Subscribe(OnCurrencyChanged);
+            EventBus<PhaseChanged>.Subscribe(OnPhaseChanged);
 
+            building = false;
             WriteLabels();
             Refresh();
         }
@@ -56,6 +67,7 @@ namespace MobileDemo.UI
         void OnDisable()
         {
             EventBus<CurrencyChanged>.Unsubscribe(OnCurrencyChanged);
+            EventBus<PhaseChanged>.Unsubscribe(OnPhaseChanged);
 
             // Removed rather than left, because these are lambdas over this instance and the
             // buttons outlive a disable.
@@ -70,6 +82,11 @@ namespace MobileDemo.UI
             if (undoButton != null)
             {
                 undoButton.onClick.RemoveAllListeners();
+            }
+
+            if (goButton != null)
+            {
+                goButton.onClick.RemoveAllListeners();
             }
         }
 
@@ -88,9 +105,29 @@ namespace MobileDemo.UI
         static void RequestUndo() =>
             EventBus<BuildActionRequested>.Publish(new BuildActionRequested(BuildAction.Undo));
 
+        // Same route as the other two, because §3 leaves exactly one -- and the same event, because
+        // §8 chose one enum over three. Its receiver is BuildState rather than BuildController,
+        // which the UI has no way of knowing and no reason to.
+        static void RequestStartWave() =>
+            EventBus<BuildActionRequested>.Publish(new BuildActionRequested(BuildAction.StartWave));
+
         void OnCurrencyChanged(CurrencyChanged evt)
         {
             currency = evt.Total;
+            Refresh();
+        }
+
+        // Greyed rather than hidden. The menu keeps its footprint across a phase change, so the
+        // board does not reflow under the player's thumb mid-wave -- and the buttons stay legible
+        // as things that will come back.
+        //
+        // This is presentation only, and deliberately not the enforcement. BuildState stops
+        // listening for StartWave when it exits, and WaveState does not tick BuildController, so
+        // building is already impossible during a wave whatever this class does. Two mechanisms
+        // for the same rule would be one too many if this were the load-bearing one; it is not.
+        void OnPhaseChanged(PhaseChanged evt)
+        {
+            building = evt.Phase == GamePhase.Build;
             Refresh();
         }
 
@@ -120,8 +157,12 @@ namespace MobileDemo.UI
             for (int i = 0; i < towerButtons.Length; i++)
             {
                 TowerDefinition definition = DefinitionAt(i);
-                towerButtons[i].interactable = definition != null && currency >= definition.Cost;
+                towerButtons[i].interactable =
+                    building && definition != null && currency >= definition.Cost;
             }
+
+            undoButton.interactable = building;
+            goButton.interactable = building;
         }
 
         TowerDefinition DefinitionAt(int index)
@@ -136,6 +177,7 @@ namespace MobileDemo.UI
         {
             bool ok = Require(catalogue, nameof(catalogue));
             ok &= Require(undoButton, nameof(undoButton));
+            ok &= Require(goButton, nameof(goButton));
 
             if (towerButtons == null || towerLabels == null
                 || towerButtons.Length != towerLabels.Length)

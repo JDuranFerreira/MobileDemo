@@ -8,13 +8,18 @@ namespace MobileDemo.Gameplay.Build
 {
     public sealed class SellTowerCommand : ICommand
     {
+        readonly TowerFactory towers;
         readonly Level level;
         readonly Economy economy;
         readonly Tower tower;
         readonly int refund;
 
-        public SellTowerCommand(Level level, Economy economy, Tower tower, float refundFraction)
+        bool sold;
+
+        public SellTowerCommand(
+            TowerFactory towers, Level level, Economy economy, Tower tower, float refundFraction)
         {
+            this.towers = towers ?? throw new ArgumentNullException(nameof(towers));
             this.level = level != null ? level : throw new ArgumentNullException(nameof(level));
             this.economy = economy ?? throw new ArgumentNullException(nameof(economy));
             this.tower = tower != null ? tower : throw new ArgumentNullException(nameof(tower));
@@ -36,6 +41,7 @@ namespace MobileDemo.Gameplay.Build
             level.RemoveTower(tower);
             tower.gameObject.SetActive(false);
             economy.Refund(refund);
+            sold = true;
         }
 
         public void Undo()
@@ -54,6 +60,29 @@ namespace MobileDemo.Gameplay.Build
 
             tower.gameObject.SetActive(true);
             level.AddTower(tower);
+            sold = false;
+        }
+
+        // Not part of ICommand, and that is the point. §6 stakes real weight on the interface
+        // being exactly Execute/Undo -- "an imperative with exactly one execution" -- and a third
+        // member would have to be answered by PlaceTowerCommand, for which it means nothing.
+        //
+        // What it *is*: the other end of the deactivate-don't-destroy rule. A sold tower survives
+        // its own sale so that Undo can restore the instance rather than manufacture a
+        // replacement, which leaves the GameObject alive and owned by the undo stack. When the
+        // stack is cleared the sale becomes unreachable, and this is the moment the object has no
+        // owner left. §6 named BuildState.Exit() as the trigger before either existed.
+        public void Discard()
+        {
+            if (!sold)
+            {
+                return;
+            }
+
+            // Through the factory, for PlaceTowerCommand.Undo's reason: it is the one place that
+            // knows Destroy behaves differently outside play mode (§14).
+            towers.Destroy(tower);
+            sold = false;
         }
     }
 }

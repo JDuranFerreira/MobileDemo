@@ -56,4 +56,16 @@ namespace MobileDemo.Core.Events
 
         public WaveCompleted(int waveIndex) => WaveIndex = waveIndex;
     }
+
+    // The second UI intent, and the contrast case to BuildActionRequested -- which cannot live in
+    // this file because its payload names a Gameplay type. This one has no payload at all, so
+    // nothing forces it out of Core, and the pair together is what makes the rule legible: a
+    // payload's type decides which assembly its event can live in, not which layer publishes it.
+    //
+    // Empty rather than carrying "restart what". There is one run to restart, and a field naming
+    // it would be a field with no reader -- the discipline §2 applies to config numbers, applied
+    // to an event payload.
+    public readonly struct RestartRequested : IEvent
+    {
+    }
 }

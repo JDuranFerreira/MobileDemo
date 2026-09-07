@@ -19,8 +19,12 @@ namespace MobileDemo.Gameplay.Build
     {
         readonly IInputService input;
         readonly Economy economy;
-        readonly Level level;
-        readonly PlacementRules rules;
+
+        // The runner rather than a Level and a PlacementRules, because both of those are per map
+        // and this object outlives a swap. Reading Current and Rules per tap is not indirection
+        // for its own sake: it is what stops a level change having to rebuild the invoker, its
+        // undo stack and its bus subscription along with the map.
+        readonly LevelRunner levels;
         readonly TowerFactory towers;
         readonly float sellRefundFraction;
 
@@ -34,13 +38,12 @@ namespace MobileDemo.Gameplay.Build
         readonly List<ICommand> history = new List<ICommand>();
 
         public BuildController(
-            IInputService input, Economy economy, Level level, PlacementRules rules,
-            TowerFactory towers, TowerCatalogue catalogue, float sellRefundFraction)
+            IInputService input, Economy economy, LevelRunner levels, TowerFactory towers,
+            TowerCatalogue catalogue, float sellRefundFraction)
         {
             this.input = input ?? throw new ArgumentNullException(nameof(input));
             this.economy = economy ?? throw new ArgumentNullException(nameof(economy));
-            this.level = level != null ? level : throw new ArgumentNullException(nameof(level));
-            this.rules = rules ?? throw new ArgumentNullException(nameof(rules));
+            this.levels = levels ?? throw new ArgumentNullException(nameof(levels));
             this.towers = towers ?? throw new ArgumentNullException(nameof(towers));
             this.sellRefundFraction = sellRefundFraction;
 
@@ -78,13 +81,22 @@ namespace MobileDemo.Gameplay.Build
                 return;
             }
 
+            // Read once per tap. A swap replaces both together, and reading them apart would let
+            // a rule from the outgoing map judge a tap on the incoming one.
+            Level level = levels.Current;
+            PlacementRules rules = levels.Rules;
+            if (level == null || rules == null)
+            {
+                return;
+            }
+
             // Sell is checked before legality, so a tap on an existing tower can never be
             // misread as an illegal placement. PlacementRules shares one radius between the two
             // questions, so exactly one branch can be true.
             Tower existing = rules.FindTowerAt(world, level.Towers);
             if (existing != null)
             {
-                Run(new SellTowerCommand(level, economy, existing, sellRefundFraction));
+                Run(new SellTowerCommand(towers, level, economy, existing, sellRefundFraction));
                 return;
             }
 
@@ -120,12 +132,44 @@ namespace MobileDemo.Gameplay.Build
             return true;
         }
 
+        // Called from BuildState.Exit(): once the wave starts, nothing can pop this stack, so
+        // every command on it is permanent and the phase boundary is where that becomes true.
+        //
+        // The `is` check is the whole reason this is not just history.Clear(). A sold tower is
+        // deactivated rather than destroyed, because Undo has to restore the instance rather than
+        // manufacture a replacement -- so its GameObject is alive and owned by this list, and
+        // clearing the list without discarding would leak one inactive tower per sale for the rest
+        // of the round.
+        //
+        // One type test in one place, chosen over an IDiscardable interface with a single
+        // implementer and over a third member on ICommand. §6 is explicit that the interface is
+        // exactly Execute/Undo, and PlaceTowerCommand has nothing to discard: its own Undo already
+        // destroys what it made, and a command left on the stack has *not* been undone, so its
+        // tower is one the player still owns.
+        public void ClearHistory()
+        {
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (history[i] is SellTowerCommand sell)
+                {
+                    sell.Discard();
+                }
+            }
+
+            history.Clear();
+        }
+
         void Run(ICommand command)
         {
             command.Execute();
             history.Add(command);
         }
 
+        // BuildAction.StartWave is deliberately absent, and there is no default. It travels this
+        // event because §8 chose one enum over three events, but its receiver is BuildState -- the
+        // phase, not the builder. Two subscribers owning disjoint values of one enum is the shape
+        // that choice implies; a default that logged or threw here would make this class complain
+        // about a message correctly addressed elsewhere.
         void OnBuildActionRequested(BuildActionRequested evt)
         {
             switch (evt.Action)

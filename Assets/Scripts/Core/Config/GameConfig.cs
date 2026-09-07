@@ -25,8 +25,10 @@ namespace MobileDemo.Core.Config
         // this asset, which is what keeps it testable with no asset and no scene.
         public int EnemyPoolPrewarm => enemyPoolPrewarm;
 
-        // Per projectile prefab, not shared across them: each prefab gets its own pool, so this
-        // sizes each one. See ProjectileFactory.
+        // Per projectile *prefab*, not per projectile type: the pools are keyed by prefab, and
+        // since every type shares one Projectile.prefab that is one pool this number sizes on its
+        // own. A type that ever needs its own prefab gets a second pool of this size. See
+        // ProjectileFactory.
         public int ProjectilePoolPrewarm => projectilePoolPrewarm;
 
         // 10 Hz. Every tower re-scans on this interval rather than every frame -- the polling
