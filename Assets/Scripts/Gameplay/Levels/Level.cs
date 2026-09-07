@@ -1,6 +1,8 @@
+using System;
 using System.Collections.Generic;
 using MobileDemo.Gameplay.Enemies;
 using MobileDemo.Gameplay.Towers;
+using MobileDemo.Gameplay.Waves;
 using UnityEngine;
 
 namespace MobileDemo.Gameplay.Levels
@@ -19,6 +21,10 @@ namespace MobileDemo.Gameplay.Levels
             + "on the board.")]
         [SerializeField] SpriteRenderer map;
 
+        [Tooltip("Run in order. The build phase returns between them; clearing the last one wins "
+            + "the level.")]
+        [SerializeField] WaveDefinition[] waves;
+
         // Seeded from the serialized array on first access, never in Awake. See EnsureSeeded.
         readonly List<Tower> live = new List<Tower>();
         bool seeded;
@@ -30,6 +36,16 @@ namespace MobileDemo.Gameplay.Levels
         // This reverses systems/level.md's earlier "nothing reads it at runtime"; the slice-two
         // authoring script read the same bounds for the same reason, at author time.
         public Bounds Bounds => map != null ? map.bounds : default;
+
+        // Per level rather than global, which is the opposite call to STARTING_LIVES and for the
+        // opposite reason: lives carry across all three maps so they are a *run* constant, where a
+        // wave sequence is the one thing that genuinely differs between maps. §7 predicted this
+        // field would be "a reference to assets rather than a reason to become one", and it is --
+        // the level stays a prefab, and the waves are assets it points at.
+        //
+        // systems/bootstrap.md predicted this would cost the composition root no new wiring,
+        // because it arrives through the level reference it already holds. It did.
+        public IReadOnlyList<WaveDefinition> Waves => waves ?? Array.Empty<WaveDefinition>();
 
         // The live list itself, not a copy: Bootstrap iterates it every frame and PlacementRules
         // reads it on every tap, so a defensive copy would allocate on a path §10 polices.
