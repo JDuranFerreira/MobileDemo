@@ -6,11 +6,12 @@ using UnityEngine;
 
 namespace MobileDemo.Gameplay.Towers
 {
-    // One pool per prefab, not one pool for all projectiles. A pool hands back an instance of the
-    // prefab it was built from, and a projectile's speed, damage and impact radius are serialized
-    // on that prefab -- so two projectile types cannot share a pool without handing a fire tower
-    // a bullet. systems/enemy-factory.md already records the same lesson for enemies: a second
-    // prefab means a second pool.
+    // One pool per prefab, not one pool per projectile *type*. A type is a ProjectileDefinition
+    // asset and every type shares one Projectile.prefab, so today that means one pool -- but the
+    // keying is still by prefab, because that is what a pool actually hands back: an instance of
+    // the prefab it was built from. systems/enemy-factory.md records the same lesson for enemies.
+    // Two definitions naming one prefab share its pool, which is now the normal case rather than
+    // the exception.
     public sealed class ProjectileFactory
     {
         readonly Dictionary<Projectile, ObjectPool<Projectile>> poolsByPrefab;
@@ -30,25 +31,27 @@ namespace MobileDemo.Gameplay.Towers
         // splitting it out would be a type built to hold one loop.
         readonly List<Projectile> live = new List<Projectile>();
 
-        // Prefabs are supplied up front and prewarmed here, deliberately not created lazily on
-        // the first shot: a pool built mid-wave would allocate its whole prewarm in one frame --
-        // the exact spike ARCHITECTURE.md §2 calls pooling mandatory to prevent.
-        public ProjectileFactory(IReadOnlyList<Projectile> prefabs, int prewarm, Transform parent = null)
+        // Definitions are supplied up front and their prefabs prewarmed here, deliberately not
+        // created lazily on the first shot: a pool built mid-wave would allocate its whole prewarm
+        // in one frame -- the exact spike ARCHITECTURE.md §2 calls pooling mandatory to prevent.
+        public ProjectileFactory(
+            IReadOnlyList<ProjectileDefinition> definitions, int prewarm, Transform parent = null)
         {
-            if (prefabs == null)
+            if (definitions == null)
             {
-                throw new ArgumentNullException(nameof(prefabs));
+                throw new ArgumentNullException(nameof(definitions));
             }
 
-            poolsByPrefab = new Dictionary<Projectile, ObjectPool<Projectile>>(prefabs.Count);
+            poolsByPrefab = new Dictionary<Projectile, ObjectPool<Projectile>>(definitions.Count);
 
-            for (int i = 0; i < prefabs.Count; i++)
+            for (int i = 0; i < definitions.Count; i++)
             {
-                Projectile prefab = prefabs[i];
+                ProjectileDefinition definition = definitions[i];
+                Projectile prefab = definition != null ? definition.Prefab : null;
                 if (prefab == null || poolsByPrefab.ContainsKey(prefab))
                 {
-                    // Two towers sharing a projectile type is normal, not an error -- they share
-                    // the pool. A null is the caller's problem and Create reports it.
+                    // Two definitions sharing a prefab is the normal case now, not an error --
+                    // they share the pool. A null is the caller's problem and Create reports it.
                     continue;
                 }
 
@@ -62,26 +65,32 @@ namespace MobileDemo.Gameplay.Towers
         // types that IPoolStats exists to make holdable at all.
         public IReadOnlyList<IPoolStats> Stats => stats;
 
-        public Projectile Create(Projectile prefab, Vector2 origin, Enemy target, EnemyRegistry enemies)
+        // damage is the firing tower's figure, passed through rather than looked up: the factory
+        // has no opinion about it, and the projectile scales it by its definition's multiplier.
+        public Projectile Create(
+            ProjectileDefinition definition, Vector2 origin, Enemy target, EnemyRegistry enemies,
+            int damage)
         {
-            if (prefab == null)
+            if (definition == null)
             {
-                throw new ArgumentNullException(nameof(prefab));
+                throw new ArgumentNullException(nameof(definition));
             }
 
-            if (!poolsByPrefab.TryGetValue(prefab, out ObjectPool<Projectile> pool))
+            Projectile prefab = definition.Prefab;
+            if (prefab == null || !poolsByPrefab.TryGetValue(prefab, out ObjectPool<Projectile> pool))
             {
-                // Not thrown: a tower wired to a prefab the factory was never told about should
-                // cost that tower its shots, not the whole run.
+                // Not thrown: a tower wired to a definition the factory was never told about
+                // should cost that tower its shots, not the whole run.
                 Debug.LogError(
-                    $"ProjectileFactory has no pool for '{prefab.name}'. It must be passed to the "
-                    + "constructor so it can be prewarmed.");
+                    $"ProjectileFactory has no pool for '{definition.name}'. Its prefab must be "
+                    + "reachable from a definition passed to the constructor so it can be "
+                    + "prewarmed.");
                 return null;
             }
 
             Projectile projectile = pool.Get();
             projectile.transform.position = origin;
-            projectile.Configure(target, enemies);
+            projectile.Configure(definition, target, enemies, damage);
             poolsByInstance[projectile] = pool;
             live.Add(projectile);
             return projectile;

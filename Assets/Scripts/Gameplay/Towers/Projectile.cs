@@ -4,26 +4,32 @@ using UnityEngine;
 
 namespace MobileDemo.Gameplay.Towers
 {
-    // Tuning lives here on the prefab rather than on a ProjectileDefinition asset, for the same
-    // reason Level's path does (ARCHITECTURE.md §7): the prefab already has to exist to carry the
-    // sprite, so an asset beside it would be a second artifact to keep in sync and a real failure
-    // mode -- a definition pointing at the wrong prefab. A projectile type *is* its prefab.
+    // Tuning lives on a ProjectileDefinition asset, not on this prefab (ARCHITECTURE.md §7). One
+    // Projectile.prefab serves every projectile type and the definition supplies the sprite, the
+    // same way one Tower.prefab serves both tower types and one EnemySoldier.prefab serves both
+    // soldiers.
+    //
+    // The damage it applies is not its own: the firing tower supplies the figure and the
+    // definition's multiplier scales it. So "how hard does this tower hit" has exactly one
+    // authored answer, on the tower.
     [RequireComponent(typeof(SpriteRenderer))]
     public sealed class Projectile : MonoBehaviour, IPoolable
     {
-        [SerializeField] float speed = 8f;
-        [SerializeField] int damage = 1;
-
-        [Tooltip("0 means single-target. Above 0, everything within this world-space radius of "
-            + "the impact point is damaged -- including the enemy that was aimed at.")]
-        [SerializeField] float impactRadius;
-
         Transform cachedTransform;
+        SpriteRenderer spriteRenderer;
+        ProjectileDefinition definition;
         EnemyRegistry registry;
         Enemy target;
         Vector2 aimPoint;
 
+        // Resolved once in Configure rather than recomputed at impact: the tower's damage is a
+        // property of the shot that was fired, so a mid-flight retune of the asset must not change
+        // what a projectile already in the air does.
+        int damage;
+
         public bool IsFinished { get; private set; }
+
+        public ProjectileDefinition Definition => definition;
 
         void Awake() => Initialize();
 
@@ -32,27 +38,53 @@ namespace MobileDemo.Gameplay.Towers
         // initializes.
         void Initialize()
         {
-            if (cachedTransform == null)
+            if (cachedTransform != null)
             {
-                cachedTransform = transform;
+                return;
             }
+
+            cachedTransform = transform;
+            spriteRenderer = GetComponent<SpriteRenderer>();
         }
 
-        public void Configure(Enemy enemy, EnemyRegistry enemies)
+        public void Configure(
+            ProjectileDefinition projectileDefinition, Enemy enemy, EnemyRegistry enemies,
+            int towerDamage)
         {
             Initialize();
 
+            definition = projectileDefinition;
             registry = enemies;
             target = enemy;
 
             // Seeded now so a projectile whose target dies on the very first tick still has
             // somewhere to fly, rather than impacting on the tower.
             aimPoint = enemy != null ? enemy.Position : (Vector2)cachedTransform.position;
+
+            if (definition == null)
+            {
+                // Finished rather than left in flight: with no definition there is no speed, so
+                // Tick would never reach its aim point and ProjectileFactory would hold the
+                // instance in its live list forever. One error, then the pool gets it back.
+                Debug.LogError($"Projectile '{name}' was configured with no definition.", this);
+                damage = 0;
+                IsFinished = true;
+                return;
+            }
+
+            // Same as Tower and Enemy: the sprite comes from the definition, which is what lets
+            // every projectile type share one prefab.
+            spriteRenderer.sprite = definition.Sprite;
+
+            // Floored at 1 so a multiplier that rounds to nothing is a weak shot rather than a
+            // silently disarmed one -- object-pool.md's stance that a bad tuning number should be
+            // recoverable, applied to arithmetic.
+            damage = Mathf.Max(1, Mathf.RoundToInt(towerDamage * definition.DamageMultiplier));
         }
 
         public void Tick(float dt)
         {
-            if (IsFinished)
+            if (IsFinished || definition == null)
             {
                 return;
             }
@@ -66,7 +98,7 @@ namespace MobileDemo.Gameplay.Towers
             }
 
             Vector2 position = cachedTransform.position;
-            Vector2 next = Vector2.MoveTowards(position, aimPoint, speed * dt);
+            Vector2 next = Vector2.MoveTowards(position, aimPoint, definition.Speed * dt);
             MoveTo(next, aimPoint - position);
 
             // MoveTowards clamps exactly, so this needs no epsilon -- the same idiom
@@ -82,18 +114,21 @@ namespace MobileDemo.Gameplay.Towers
         public void OnDespawn()
         {
             // Cleared or the pool holds the last target alive, and a stale registry would let a
-            // recycled projectile damage enemies from a previous level.
+            // recycled projectile damage enemies from a previous level. The definition goes with
+            // them: a recycled projectile is a different shot, and Configure supplies all three.
             target = null;
             registry = null;
+            definition = null;
+            damage = 0;
         }
 
         void Impact()
         {
-            if (impactRadius > 0f)
+            if (definition.ImpactRadius > 0f)
             {
                 // Splash only, never splash *plus* a direct hit: the aimed-at enemy sits at the
                 // centre of the radius, so damaging it separately would hit it twice.
-                registry?.DamageWithin(aimPoint, impactRadius, damage);
+                registry?.DamageWithin(aimPoint, definition.ImpactRadius, damage);
             }
             else if (target != null && target.IsTargetable)
             {

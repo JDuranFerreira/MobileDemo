@@ -122,12 +122,15 @@ namespace MobileDemo.Gameplay.Towers
 
         void Fire()
         {
-            if (definition.ProjectilePrefab == null)
+            if (definition.Projectile == null)
             {
                 return;
             }
 
-            projectiles.Create(definition.ProjectilePrefab, cachedTransform.position, target, registry);
+            // The tower's damage travels with the shot. The projectile scales it by its own
+            // multiplier and applies it on impact -- this type still damages nothing directly.
+            projectiles.Create(
+                definition.Projectile, cachedTransform.position, target, registry, definition.Damage);
         }
     }
 }

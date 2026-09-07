@@ -7,13 +7,17 @@ namespace MobileDemo.Gameplay.Towers
     // Which tower types the player may build. It reads like a convenience for the build menu, and
     // that is the smaller half of why it exists.
     //
-    // The larger half is pooling. ProjectileFactory takes every projectile prefab up front by
+    // The larger half is pooling. ProjectileFactory takes every projectile definition up front by
     // explicit decision -- a pool built on the first shot would allocate its whole prewarm
-    // mid-wave -- and Create on a prefab it was never told about logs an error and returns null.
-    // So a buildable tower whose projectile was not collected at boot would silently lose every
-    // shot, and *something* has to enumerate the buildable definitions before the factory is
+    // mid-wave -- and Create on a definition it was never told about logs an error and returns
+    // null. So a buildable tower whose projectile was not collected at boot would silently lose
+    // every shot, and *something* has to enumerate the buildable definitions before the factory is
     // constructed. This asset would therefore have to exist even if the buildable type were
     // hardcoded, which is why adopting it now is not anticipation.
+    //
+    // One shared Projectile.prefab narrowed that hole without closing it: every definition points
+    // at the same prefab today, so a missed one still finds a pool -- until the first type that
+    // needs its own prefab, when the hole is exactly as wide as it ever was. The closure stays.
     //
     // It is not on GameConfig, and that is not a preference: GameConfig lives in MobileDemo.Core,
     // which references nothing project-specific, so a TowerDefinition field there does not
@@ -32,7 +36,7 @@ namespace MobileDemo.Gameplay.Towers
 
         // Appends into a caller-supplied list rather than returning one, so Bootstrap can union
         // this with the level's pre-placed towers without a second allocation.
-        public void CollectProjectilePrefabs(List<Projectile> into)
+        public void CollectProjectileDefinitions(List<ProjectileDefinition> into)
         {
             if (into == null)
             {
@@ -43,13 +47,13 @@ namespace MobileDemo.Gameplay.Towers
             for (int i = 0; i < definitions.Count; i++)
             {
                 TowerDefinition definition = definitions[i];
-                Projectile prefab = definition != null ? definition.ProjectilePrefab : null;
+                ProjectileDefinition projectile = definition != null ? definition.Projectile : null;
 
                 // Two tower types sharing a projectile is normal, not an error -- they share the
                 // pool, so a duplicate here would build a second one for nothing.
-                if (prefab != null && !into.Contains(prefab))
+                if (projectile != null && !into.Contains(projectile))
                 {
-                    into.Add(prefab);
+                    into.Add(projectile);
                 }
             }
         }
