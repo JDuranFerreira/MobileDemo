@@ -123,7 +123,10 @@ reason: the class stays constructible in a test with no asset and no scene.
 - **A refused `TrySpend` publishes nothing**, which is the branch most likely to break that
   invariant: a rejected spend that re-announced the unchanged total would make every failed tap
   look like a transaction. `TrySpend_ForMoreThanCurrency_PublishesNothing` pins it.
-- **Undo's correctness depends on the *stack*, not on this class.** Undoing a sell charges its
+- **Undo's correctness depends on the *stack*, not on this class.** (§13.6: with selling off the
+  tap, every entry on that stack is a placement and so a debit, which makes the argument below
+  trivially true rather than wrong. It is kept because a sale is one product decision away.)
+  Undoing a sell charges its
   refund back, and that refund can have been spent — so `TrySpend` can fail here in principle.
   It cannot in practice, because `BuildController` is the only spender and pops strictly LIFO. §6
   has the argument; `SellTowerCommand` logs an error if the impossible happens rather than silently

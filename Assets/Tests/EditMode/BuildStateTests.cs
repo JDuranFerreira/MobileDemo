@@ -12,7 +12,11 @@ namespace MobileDemo.Tests.EditMode
     // The state that makes §4's shared IGameState pay: Exit() finally has work to do, and both of
     // its jobs are ones a guard clause would have done worse. These tests are about the two claims
     // the design rests on -- that the Go button is dead outside the build phase because nothing is
-    // listening, and that a sold tower's GameObject stops being the undo stack's problem here.
+    // listening, and that the undo stack stops being a stack here.
+    //
+    // The sold-tower half of this fixture is gone with the sell tap: a placed tower is permanent,
+    // so nothing reaches SellTowerCommand.Discard from a phase change any more. The mechanism is
+    // still in BuildController for the day selling returns, and SellTowerCommandTests covers it.
     public class BuildStateTests
     {
         BuildScaffold scaffold;
@@ -32,8 +36,7 @@ namespace MobileDemo.Tests.EditMode
                 scaffold.Economy,
                 scaffold.Levels,
                 scaffold.Towers,
-                scaffold.Catalogue,
-                BuildScaffold.RefundFraction);
+                scaffold.Catalogue);
             build.Subscribe();
 
             machine = new GameStateMachine();
@@ -83,20 +86,6 @@ namespace MobileDemo.Tests.EditMode
             machine.Tick(0.1f);
             input.Tap(world);
             machine.Tick(0.1f);
-        }
-
-        /// <summary>A sold tower, still alive and owned by the undo stack.</summary>
-        Tower SellATower()
-        {
-            Tower tower = scaffold.Place(scaffold.Green, BuildScaffold.LegalSpot);
-            scaffold.Level.AddTower(tower);
-
-            input.Tap(BuildScaffold.LegalSpot);
-            build.Tick();
-
-            Assert.AreEqual(1, build.UndoDepth, "precondition: the sale is on the stack");
-            Assert.IsTrue(tower != null, "precondition: a sale deactivates rather than destroys");
-            return tower;
         }
 
         [Test]
@@ -239,23 +228,6 @@ namespace MobileDemo.Tests.EditMode
             machine.Change(GamePhase.Wave);
 
             Assert.IsNull(build.Pending);
-        }
-
-        /// <summary>
-        /// §6 named this exact moment as the trigger for destroying a sold tower. A sale
-        /// deactivates rather than destroys so Undo can restore the instance, which leaves the
-        /// GameObject owned by the undo stack; once the wave starts nothing can pop that stack, so
-        /// clearing it without discarding would leak one inactive tower per sale for the round.
-        /// </summary>
-        [Test]
-        public void Exit_DestroysTowersSoldDuringThePhase()
-        {
-            machine.Change(GamePhase.Build);
-            Tower sold = SellATower();
-
-            machine.Change(GamePhase.Wave);
-
-            Assert.IsTrue(sold == null, "a sale the player can no longer undo owns nothing");
         }
 
         /// <summary>

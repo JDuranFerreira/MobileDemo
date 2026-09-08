@@ -316,8 +316,10 @@ rewritten. Four things it decided that this diagram could not:
 **`Exit()` earned its keep, which this section predicted in as many words.** It said the cost of
 sharing the interface was three empty `Exit()` bodies and that the round's machine would repay it.
 `BuildState.Exit()` does two jobs: it unsubscribes the Go button — so the button is dead mid-wave
-because *nothing is listening*, not because anything checked — and it clears the undo stack,
-destroying towers sold during the phase. Both are things a guard clause would have done worse.
+because *nothing is listening*, not because anything checked — and it closes the undo scope, which
+clears the stack. (It used to destroy towers sold during the phase as well; §13.6 removed selling
+from the tap, so the clearing is all that is left to do. §6 records why the discard machinery
+stays.) Both are things a guard clause would have done worse.
 `WaveState.Exit()` is no longer one of the empty ones either: it cancels a pending placement, so a
 ghost cannot survive the phase that offered it.
 
@@ -364,7 +366,7 @@ cannot infer:
 | `Projectile` | Flight, impact, splash | **Object Pool**, ScriptableObject-driven (§7) |
 | `ProjectileFactory` | Turns a `ProjectileDefinition` into a live, pooled projectile — one pool per prefab | **Factory + Object Pool** |
 | `Economy` | Currency & lives | **Observer** (emits changes) |
-| `BuildController` | Place/sell via undoable actions, on a LIFO stack; holds the placement the player has pointed at but not yet bought | **Command** |
+| `BuildController` | Place via undoable actions, on a LIFO stack; holds the placement the player has pointed at but not yet bought. Selling is no longer one of its verbs (§6) | **Command** |
 | `PlacementRules` | Where a tower may stand, which tower a tap hit, and whether a tap is the spot already pointed at | **none** — a plain class, three queries (§6) |
 | `PlacementGhost` | Draws the transparent tower between the two taps of a placement | **Observer** — subscribes `PlacementPreviewChanged`, decides nothing |
 | `PointerInputService` | Touch or mouse → world intent | one interface, **one** implementation — see §10 |
@@ -663,10 +665,29 @@ alternative. That ratio is the honest signal, not the pattern count.
   a spend made *after* a sell sits **above** it on the stack, so it is undone and refunded first.
   Formally — after a sell the balance is `C + r`; a later place requires `C + r >= cost` and its
   undo restores exactly `cost`, so on returning to the sell the balance is at least `r`; earnings
-  only add. `Undo_AfterPlacingOnTopOfASell_UnwindsBothAndRestoresTheOpeningBalance` pins it.
+  only add.
   **Named trigger for `bool Undo()`: the first spender that is not a `BuildController` command** —
   a call-the-wave-early cost, a repair charge — because that is the one thing that can consume a
   refund without being on the stack.
+  - *The fixture that pinned this is gone, and the argument is not.*
+    `Undo_AfterPlacingOnTopOfASell_UnwindsBothAndRestoresTheOpeningBalance` walked a mixed
+    `[Sell, Place]` stack, and §13.6 made that stack unreachable: with selling off the tap, nothing
+    puts a `SellTowerCommand` on it. `BuildControllerTests` now asserts the placement-only version
+    (which is arithmetically trivial — every entry is a debit), `SellTowerCommandTests` still covers
+    the refund and the floor, and the proof above stands as prose. Recorded rather than quietly
+    dropped, because an invariant that lost its test is exactly the kind of thing that later reads
+    as never having had one.
+- **§13.6 removed selling from the tap, and this entry is deliberately left standing.** A placed
+  tower is permanent: the only thing that gives one back is `Undo`, in the build phase it was bought
+  in, and a tap on a tower is now a silent rejection like a tap on the road. That means the three
+  bullets around this one — the deactivate-not-destroy rule, `Discard`, and the solvency proof —
+  describe machinery with **no producer**. Kept, not deleted, and the reasoning is the same one this
+  section applies to redo in reverse: redo was cut because it contradicted the definition of a
+  command, where selling is a *product* decision that a per-tower UI would reverse in an afternoon.
+  What would be lost by deleting it is the only worked example in this document of undo restoring an
+  instance rather than manufacturing one. **Trigger to revive: any affordance that gives a tower
+  back.** The player-facing reason for the removal is one line: a tower already fought behind is not
+  a mistake, and a refund for it is a refund for an outcome the player has watched.
 - **A sold tower is deactivated, never destroyed, and that is load-bearing.** With
   destroy-and-recreate, the stack `[Place, Sell]` breaks: undoing the sell yields a *new* instance,
   so undoing the place beneath it then destroys a reference that is already gone — leaving the new
@@ -676,7 +697,8 @@ alternative. That ratio is the honest signal, not the pattern count.
   **That named trigger — `BuildState.Exit()` — has fired**, and it fired at the place it was
   named for rather than somewhere convenient. `BuildController.ClearHistory()` walks the stack,
   calls `SellTowerCommand.Discard()` on each sale, and empties it; once a wave has started nothing
-  can pop the stack, so a sale that can no longer be undone has no owner left.
+  can pop the stack, so a sale that can no longer be undone has no owner left. (§13.6: `Retire`,
+  which is where that check now lives, has two callers and no producer — see the bullet above.)
   - *Why `Discard` is not a third member on `ICommand`.* The interface is defined two bullets up as
     exactly `Execute`/`Undo`, and `PlaceTowerCommand` has nothing to discard: its own `Undo`
     already destroys what it made, and a placement still *on* the stack is a tower the player owns
@@ -782,7 +804,22 @@ needs a selection UI, so the trigger for `UpgradeTowerCommand` is **a per-tower 
 shape. Recorded as a strengthening rather than a replacement: the shape question is answered
 (`nextTier`, one asset per tier), and only the input question is open.
 
+**§13.6 removed the competitor and the trigger did not move, which is the interesting part.** A
+placed tower is permanent now (see §6), so a tap on one means nothing and the gesture is free — the
+one argument above is void. The trigger stays **a per-tower UI** anyway, for the reason the first
+deferral gave rather than the second: an upgrade needs to say *which* tower and *to what*, and a
+tap that upgrades whatever it lands on is a tap that spends the player's money without asking. The
+freed gesture is worth recording precisely so the next reader does not spend it on the first verb
+that fits.
+
 ### Why `SELL_REFUND_FRACTION` is on `GameConfig` and not on `TowerDefinition`
+
+**Nothing reads this number as of §13.6, and the section stays.** Selling was removed from the tap
+(§6), so `SellRefundFraction` has no runtime reader: `Bootstrap` no longer passes it, and
+`BuildController` no longer holds it. The field, its clamp and this reasoning are kept because the
+question they answer is not "is selling on" but "where does a rule like this live", and because a
+sell affordance on a per-tower UI is the named way it comes back. Read the rest of this section as
+the answer waiting for that, not as a description of live behaviour.
 
 Same shape of question as `STARTING_LIVES` below, and it is worth the two lines because the wrong
 guess is again a plausible "fix". A refund fraction reads like a property of a tower — a salvage
@@ -1734,7 +1771,7 @@ types: `Tower`, `TowerDefinition`, `Projectile`, `ProjectileFactory`, `EnemyRegi
   and no growth warning was logged by any of the three pools.
 - **123 EditMode tests green** (70 before this slice, 53 added), run headless via `-runTests`.
 
-### The three things this slice cost, recorded because they are what a reader cannot infer
+### The four things this slice cost, recorded because they are what a reader cannot infer
 
 **Tower *placement* dominated tower *tuning*, which was the opposite of the expectation.** The
 first attempt put the green tower beside path segment 1. It killed every enemy within a second of
@@ -2315,7 +2352,7 @@ the new road is a manual check, and it has not been done.
 
 ## 13.6 Seventh slice — the towers become the player's — **done; certified by tests and compile, unseen by a human**
 
-Three player-facing changes, and one of them is a design reversal rather than a feature:
+Four player-facing changes, and two of them are design reversals rather than features:
 
 - **The three maps no longer come with towers.** All three `towers` arrays are empty; every tower on
   the board is bought. See [systems/level.md](systems/level.md).
@@ -2324,7 +2361,12 @@ Three player-facing changes, and one of them is a design reversal rather than a 
   that spot buys it. See [systems/placement-ghost.md](systems/placement-ghost.md).
 - **Towers can be bought during a wave**, which reopens §10's allocation budget on purpose (§10
   carries the amended invariant) and forced the undo question below.
-- **`BuildMenu` shows which type is armed**, by tinting the button's own image.
+- **`BuildMenu` shows which type is armed**, by tinting the button's own image — and its labels are
+  written dark by the same class, because white-on-white was the result of the tint and the text
+  colour being owned in two different places.
+- **A placed tower cannot be removed.** Tapping one no longer sells it; `Undo`, inside the build
+  phase the purchase was made in, is the only thing that gives a tower back. §6 and §7 carry what
+  that left standing with no producer, and why none of it was deleted.
 
 ### What it makes real, rather than asserted
 
@@ -2357,8 +2399,10 @@ impossible to write against a ghost that owned its own truth.
 
 ### Certified, and by what
 
-- **295 EditMode tests green** (280 before), through `Tools/unity.ps1 -Tests`. The 15 new ones are
-  the two-tap flow, the confirm's re-validation, the cancel routes and the undo scope — see §14.
+- **292 EditMode tests green** (280 before), through `Tools/unity.ps1 -Tests`. Net +12: sixteen new
+  cases — the two-tap flow, the confirm's re-validation, the cancel routes, the undo scope, and a
+  placed tower refusing to be removed — against four that died with the sell tap (see the costs
+  below and §14).
 - **All five assemblies compile** (`dotnet build`, the test assembly included), and
   **`Tools/lint.ps1` is clean** across all five.
 - **The scene edit is one object and nothing else.** `GhostAuthoring.Run` added `PlacementGhost`
@@ -2398,6 +2442,15 @@ whose job is to *ask* about rules, so `IsTheSameSpot` is a third one-line query 
 callers, since a mid-wave sale has to destroy its tower immediately rather than leave one
 deactivated GameObject alive until the next phase boundary. One extracted method, and §6's argument
 against an `IDiscardable` is unchanged by having two call sites instead of one.
+
+**Removing the sell tap cost four tests that could not be rewritten, and they are the ones that
+made §6's sharpest argument concrete.** `Undo_AfterASell_RestoresTheTower`, the sell-in-the-middle
+solvency case, `ClearHistory_DestroysTheTowersOfSalesItDiscards` and the mid-wave-sale case all
+drove a `SellTowerCommand` *through the invoker*, and nothing can put one on the stack any more.
+`SellTowerCommandTests` still covers the command — refund, floor, `Discard`, deactivate-not-destroy
+— so what was lost is the integration rather than the unit, and §6 now carries the solvency proof
+as prose plus that fixture. Recorded here because an invariant whose test quietly disappeared is
+indistinguishable, later, from one that never had a test.
 
 **Every build fixture that placed a tower with one tap had to learn to tap twice** — 15 call sites
 across `BuildControllerTests` and `BuildStateTests`, reduced to one `ConfirmAt` helper each.
@@ -2488,11 +2541,12 @@ asset.** Every one builds its definitions with `ScriptableObject.CreateInstance`
 cannot be *validated* by one either. Those 280 tests say the systems are right; only a play session
 can say the numbers are.
 
-**§13.6 added no fixture and 15 cases, taking the suite to 295** — the two-tap placement flow
-(arm, move, confirm, and confirm-refused when the currency or the spot has gone), the cancel routes,
-and the undo scope in both positions. They live in the fixtures that already existed because the
+**§13.6 added no fixture and moved the suite from 280 to 292** — sixteen cases in, four out. The
+new ones are the two-tap placement flow (arm, move, confirm, and confirm-refused when the currency
+or the spot has gone), the cancel routes, the undo scope in both positions, and a placed tower
+refusing to be sold or replaced. They live in the fixtures that already existed because the
 behaviour did too: `BuildControllerTests` is the file that had to learn that one tap no longer buys
-anything. Two things worth recording about them:
+anything. Three things worth recording about them:
 
 - **The published preview is asserted as a *sequence*, not a final state** — one `Active: true` when
   a tap arms a placement, one `Active: false` on the confirm or the cancel, and *nothing at all* when
@@ -2501,6 +2555,10 @@ anything. Two things worth recording about them:
 - **`PlacementGhost` itself has no fixture, and that is the boundary rather than an omission.** Its
   whole body is `spriteRenderer.sprite`, a transform write and `enabled` — the half EditMode cannot
   see, for `HudPresenter`'s reason. Everything that *decides* for it is a plain class and is tested.
+- **Four tests were deleted rather than adapted, and §6 says which.** Each drove a
+  `SellTowerCommand` through `BuildController`, which a tap can no longer do. The command's own
+  fixture is untouched, so the loss is at the integration level — including the mixed-stack
+  solvency case, which was the sharpest test in the build suite.
 
 **`PathEditor` is deliberately untested, and the reasoning is `EnemyPath`'s own, one paragraph
 down.** Testing it from `MobileDemo.Tests.EditMode` would mean adding a reference to

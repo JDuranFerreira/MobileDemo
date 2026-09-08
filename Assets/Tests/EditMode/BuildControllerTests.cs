@@ -55,8 +55,7 @@ namespace MobileDemo.Tests.EditMode
             scaffold.Economy,
             scaffold.Levels,
             scaffold.Towers,
-            catalogue,
-            BuildScaffold.RefundFraction);
+            catalogue);
 
         void TapAt(Vector2 world)
         {
@@ -124,8 +123,8 @@ namespace MobileDemo.Tests.EditMode
 
         /// <summary>
         /// The confirm radius is <c>TowerSpacing</c>, reused from PlacementRules — the same radius
-        /// that blocks a placement and selects a tower for sale, so a thumb does not have to hit
-        /// the first tap's pixel.
+        /// that blocks a placement beside another tower, so a thumb does not have to hit the first
+        /// tap's pixel.
         /// </summary>
         [Test]
         public void Tick_ConfirmingWithinTheSpacing_CountsAsTheSameSpot()
@@ -240,21 +239,33 @@ namespace MobileDemo.Tests.EditMode
             Assert.AreEqual(100, scaffold.Economy.Currency);
         }
 
+        /// <summary>
+        /// A placed tower is permanent: tapping it neither sells it nor places a second one. There
+        /// is no branch in the dispatch for this — the spacing rule rejects the tap as an illegal
+        /// placement, which is the same silence the road gets.
+        /// </summary>
         [Test]
-        public void Tick_TappingAnExistingTower_SellsItAndDoesNotAlsoPlace()
+        public void Tick_TappingAPlacedTower_DoesNothing()
         {
             ConfirmAt(BuildScaffold.LegalSpot);
-            Assert.AreEqual(1, scaffold.Level.Towers.Count);
+            Tower placed = scaffold.Level.Towers[0];
+            Assert.AreEqual(50, scaffold.Economy.Currency, "precondition");
 
             TapAt(BuildScaffold.LegalSpot);
+            TapAt(BuildScaffold.LegalSpot);
 
-            Assert.AreEqual(0, scaffold.Level.Towers.Count, "the tap sold rather than placing");
-            Assert.AreEqual(75, scaffold.Economy.Currency);
-            Assert.AreEqual(2, build.UndoDepth);
+            Assert.AreEqual(1, scaffold.Level.Towers.Count);
+            Assert.IsTrue(placed != null, "and it is the same instance, not a replacement");
+            Assert.AreEqual(50, scaffold.Economy.Currency, "no refund, no second purchase");
+            Assert.AreEqual(1, build.UndoDepth, "nothing was recorded for either tap");
         }
 
+        /// <summary>
+        /// And it does not throw away a ghost positioned elsewhere, because a tap on a tower is now
+        /// a rejection rather than an action — the same treatment as a tap on the road.
+        /// </summary>
         [Test]
-        public void Tick_SellingWithSomethingPendingElsewhere_CancelsTheGhost()
+        public void Tick_TappingAPlacedTowerWithSomethingPending_LeavesItPending()
         {
             ConfirmAt(BuildScaffold.LegalSpot);
             TapAt(BuildScaffold.OtherLegalSpot);
@@ -262,8 +273,8 @@ namespace MobileDemo.Tests.EditMode
 
             TapAt(BuildScaffold.LegalSpot);
 
-            Assert.IsNull(build.Pending);
-            Assert.AreEqual(0, scaffold.Level.Towers.Count);
+            Assert.AreSame(scaffold.Green, build.Pending);
+            Assert.AreEqual(BuildScaffold.OtherLegalSpot, build.PendingPosition);
         }
 
         [Test]
@@ -349,18 +360,6 @@ namespace MobileDemo.Tests.EditMode
         }
 
         [Test]
-        public void Undo_AfterASell_RestoresTheTower()
-        {
-            ConfirmAt(BuildScaffold.LegalSpot);
-            TapAt(BuildScaffold.LegalSpot);
-
-            Assert.IsTrue(build.Undo());
-
-            Assert.AreEqual(1, scaffold.Level.Towers.Count);
-            Assert.AreEqual(50, scaffold.Economy.Currency);
-        }
-
-        [Test]
         public void Undo_PopsInLifoOrder()
         {
             ConfirmAt(BuildScaffold.LegalSpot);
@@ -377,25 +376,21 @@ namespace MobileDemo.Tests.EditMode
         }
 
         /// <summary>
-        /// The LIFO-solvency invariant, and the reason ICommand needs no CanUndo and no bool Undo.
-        /// Selling then placing spends the refund — so undoing the sell looks like it could fail
-        /// for want of funds. It cannot: the place sits above the sell on the stack, so it is
-        /// undone and refunded first, and the balance returns to its opening value exactly.
+        /// The LIFO-solvency invariant used to be asserted here with a sell in the middle of the
+        /// stack, and cannot be any more: nothing this class does constructs a
+        /// <c>SellTowerCommand</c> now that a placed tower is permanent. What is left of the
+        /// invariant at this level is that undo unwinds placements in reverse and returns the
+        /// opening balance exactly; the refund arithmetic that made the invariant interesting lives
+        /// in <c>SellTowerCommandTests</c>, and ARCHITECTURE.md §6 has the proof.
         /// </summary>
         [Test]
-        public void Undo_AfterPlacingOnTopOfASell_UnwindsBothAndRestoresTheOpeningBalance()
+        public void Undo_AfterTwoPlacements_UnwindsBothAndRestoresTheOpeningBalance()
         {
             ConfirmAt(BuildScaffold.LegalSpot);
             Assert.AreEqual(50, scaffold.Economy.Currency);
 
-            TapAt(BuildScaffold.LegalSpot);
-            Assert.AreEqual(75, scaffold.Economy.Currency, "the sale refunded floor(50 * 0.5)");
-
             ConfirmAt(BuildScaffold.OtherLegalSpot);
-            Assert.AreEqual(25, scaffold.Economy.Currency, "the refund has now been spent");
-
-            Assert.IsTrue(build.Undo());
-            Assert.AreEqual(75, scaffold.Economy.Currency);
+            Assert.AreEqual(0, scaffold.Economy.Currency);
 
             Assert.IsTrue(build.Undo());
             Assert.AreEqual(50, scaffold.Economy.Currency);
@@ -435,24 +430,6 @@ namespace MobileDemo.Tests.EditMode
             Assert.AreEqual(2, scaffold.Level.Towers.Count, "clearing makes permanent, not gone");
         }
 
-        /// <summary>
-        /// The `is SellTowerCommand` branch, at the level it lives. A sold tower is deactivated
-        /// rather than destroyed so Undo can restore the instance, which leaves its GameObject
-        /// owned by this stack — clearing without discarding leaks one inactive tower per sale.
-        /// </summary>
-        [Test]
-        public void ClearHistory_DestroysTheTowersOfSalesItDiscards()
-        {
-            ConfirmAt(BuildScaffold.LegalSpot);
-            Tower placed = scaffold.Level.Towers[0];
-            TapAt(BuildScaffold.LegalSpot);
-            Assert.IsTrue(placed != null, "precondition: the sale did not destroy it");
-
-            build.ClearHistory();
-
-            Assert.IsTrue(placed == null);
-        }
-
         [Test]
         public void ClearHistory_OnAnEmptyStack_DoesNothing()
         {
@@ -478,22 +455,22 @@ namespace MobileDemo.Tests.EditMode
         }
 
         /// <summary>
-        /// A sale with no stack to hand its tower to destroys it immediately, rather than leaving
-        /// one deactivated GameObject per mid-wave sale alive until the next build phase ends.
+        /// The retire path — <c>ClearHistory</c>'s <c>is SellTowerCommand</c> check, shared with
+        /// <c>Run</c> — has no producer left now that a tap cannot sell, so what a closed scope
+        /// observably does is refuse to record. <c>SellTowerCommandTests</c> covers
+        /// <c>Discard</c> itself, which is the half a sale would need if selling returns.
         /// </summary>
         [Test]
-        public void Tick_WithTheUndoScopeClosed_SellingDestroysTheTowerAtOnce()
+        public void CloseUndoScope_ClearsWhatWasAlreadyRecorded()
         {
             ConfirmAt(BuildScaffold.LegalSpot);
             Tower placed = scaffold.Level.Towers[0];
+            Assert.AreEqual(1, build.UndoDepth, "precondition");
+
             build.CloseUndoScope();
 
-            TapAt(BuildScaffold.LegalSpot);
-
-            Assert.AreEqual(0, scaffold.Level.Towers.Count);
-            Assert.AreEqual(75, scaffold.Economy.Currency);
-            Assert.IsTrue(placed == null);
             Assert.AreEqual(0, build.UndoDepth);
+            Assert.IsTrue(placed != null, "a placement it kept is a tower the player owns");
         }
 
         [Test]

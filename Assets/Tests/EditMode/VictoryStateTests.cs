@@ -86,8 +86,7 @@ namespace MobileDemo.Tests.EditMode
                 scaffold.Economy,
                 levels,
                 scaffold.Towers,
-                scaffold.Catalogue,
-                BuildScaffold.RefundFraction);
+                scaffold.Catalogue);
 
             waveState = new WaveState(machine, waves, levels, scaffold.Projectiles, builder);
             build = new NullState();

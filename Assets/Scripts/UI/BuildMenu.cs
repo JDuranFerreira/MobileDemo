@@ -36,6 +36,9 @@ namespace MobileDemo.UI
 
         [SerializeField] Color normalTint = Color.white;
 
+        [Tooltip("Tower button text. Dark, because both tints above are light.")]
+        [SerializeField] Color labelColor = new Color(0.05f, 0.12f, 0.30f);
+
         int currency;
 
         // Opens closed and is opened by the PhaseChanged that Bootstrap.Start publishes, rather
@@ -172,6 +175,11 @@ namespace MobileDemo.UI
                     // only and so cannot substitute the name. Safe here precisely because this
                     // runs once: the per-change path below touches no strings.
                     towerLabels[i].SetText($"{definition.name}\n${definition.Cost}");
+
+                    // Written here rather than left to the scene: the button's image is code's to
+                    // tint now, and white-on-white was the result of the two colours being set in
+                    // different places. One owner for both means they cannot drift apart.
+                    towerLabels[i].color = labelColor;
                 }
             }
         }

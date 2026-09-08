@@ -26,7 +26,6 @@ namespace MobileDemo.Gameplay.Build
         // undo stack and its bus subscription along with the map.
         readonly LevelRunner levels;
         readonly TowerFactory towers;
-        readonly float sellRefundFraction;
 
         // A list used LIFO, not a Stack<T>, only so the depth is readable for a test. There is no
         // cap: the ceiling is the number of build actions in a round, which is a handful, so a
@@ -53,15 +52,17 @@ namespace MobileDemo.Gameplay.Build
         // one nothing has taken the undo button away from yet.
         bool recordsUndo = true;
 
+        // The refund fraction was the sixth argument and is gone with the sell tap: nothing here
+        // constructs a SellTowerCommand any more, so holding the number would be a field with no
+        // reader. GameConfig still carries it (§7), which is where it waits if selling returns.
         public BuildController(
             IInputService input, Economy economy, LevelRunner levels, TowerFactory towers,
-            TowerCatalogue catalogue, float sellRefundFraction)
+            TowerCatalogue catalogue)
         {
             this.input = input ?? throw new ArgumentNullException(nameof(input));
             this.economy = economy ?? throw new ArgumentNullException(nameof(economy));
             this.levels = levels ?? throw new ArgumentNullException(nameof(levels));
             this.towers = towers ?? throw new ArgumentNullException(nameof(towers));
-            this.sellRefundFraction = sellRefundFraction;
 
             // Opens on the first buildable type so the demo is playable before anything is tapped
             // in the menu. Null when the catalogue is empty, which Tick treats as "nothing to
@@ -117,30 +118,27 @@ namespace MobileDemo.Gameplay.Build
                 return;
             }
 
-            // The confirm is tested before the sell, which is one more rung on the same ladder the
-            // sell-before-legality note below describes. A pending ghost stands on legal ground, so
-            // it is already a full spacing clear of every tower -- but a tap between the two can
-            // still be inside both radii, and there the player's own pending intent wins over a
-            // reading of the same tap as "sell that one".
+            // The confirm is tested first, and the ordering still matters now that a tap has only
+            // two possible answers. A pending ghost stands on legal ground, so it is a full spacing
+            // clear of every tower -- but a tap between the two is inside both radii, and there the
+            // player's own pending intent wins over a reading of the same tap as "that spot is
+            // taken".
             if (pending != null && rules.IsTheSameSpot(world, pendingPosition))
             {
                 Confirm(level, rules);
                 return;
             }
 
-            // Sell is checked before legality, so a tap on an existing tower can never be
-            // misread as an illegal placement. PlacementRules shares one radius between the two
-            // questions, so exactly one branch can be true.
-            Tower existing = rules.FindTowerAt(world, level.Towers);
-            if (existing != null)
-            {
-                // Selling is the answer to this tap, so the ghost the player left somewhere else is
-                // no longer what they are doing.
-                CancelPending();
-                Run(new SellTowerCommand(towers, level, economy, existing, sellRefundFraction));
-                return;
-            }
-
+            // A tap on a placed tower used to sell it, and a placed tower is now permanent, so
+            // there is no branch here for it. It needs none: IsLegal already rejects a tap within
+            // towerSpacing of an existing tower, so the tap falls through to the silent rejection
+            // below rather than to a special case. The spacing radius that once decided *which*
+            // tower a tap hit is the radius that now makes tapping one mean nothing.
+            //
+            // What that leaves standing: undo, which is a mistake in this phase rather than a
+            // change of mind about a tower already fought behind. SellTowerCommand itself is kept
+            // rather than deleted -- see ClearHistory and Retire, and §6.
+            //
             // Every rejection below is silent. The HUD is the feedback -- currency simply does not
             // move -- and a rejected-tap flash is PrimeTween's job, which is not installed (§15).
             //

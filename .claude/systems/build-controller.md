@@ -9,11 +9,21 @@ rule about interfaces that serve one type, applied to a helper).
 
 Turn a tap into the right build action, and keep those actions undoable *while the phase that owns
 undo is running*. Concretely: read one tap per frame, decide whether it confirms a pending
-placement, sells an existing tower or arms a new placement, validate, construct the command,
-execute it, and push it onto a LIFO stack — or retire it on the spot, if the undo scope is closed.
+placement or arms a new one, validate, construct the command, execute it, and push it onto a LIFO
+stack — or retire it on the spot, if the undo scope is closed.
 
 A placement takes two taps. The first arms a **pending placement** — plain state, and announced on
 the bus so [`PlacementGhost`](placement-ghost.md) can draw it — and the second buys it.
+
+**A tap can no longer sell.** A placed tower is permanent, and the only way to remove one is
+`Undo`, inside the build phase it was bought in. There is no branch in the dispatch for a tap on a
+tower: `IsLegal` already rejects anything within `towerSpacing` of one, so such a tap is a silent
+rejection like a tap on the road. `SellTowerCommand`, `Discard`, `Retire` and
+`GameConfig.SellRefundFraction` are all still here and all currently without a producer — kept
+rather than deleted because §6's Command reasoning is built on them and a sell affordance is a
+plausible return; recorded as dead-by-decision rather than left to look like an oversight.
+*Trigger to revive: any affordance that gives a tower back — a sell button on a per-tower UI, or a
+salvage refund.*
 
 It deliberately does **not**:
 
@@ -82,10 +92,12 @@ field instead of rebuilding the invoker and re-subscribing it. Both are read tog
 
 ## Data
 
-No serialized fields — it is a plain class. Three numbers arrive as constructor arguments from
-`GameConfig`: `SellRefundFraction` directly, and `BuildRoadClearance` and `BuildTowerSpacing`
-through the [`LevelRunner`](level-runner.md) that now builds the `PlacementRules`. §7 records why
-the refund fraction is a run rule rather than a per-tower one.
+No serialized fields — it is a plain class. Two numbers reach it, both indirectly, through the
+[`LevelRunner`](level-runner.md) that builds the `PlacementRules`: `BuildRoadClearance` and
+`BuildTowerSpacing`. `SellRefundFraction` used to be a sixth constructor argument and is gone with
+the sell tap — nothing here constructs a `SellTowerCommand`, so the field had no reader.
+`GameConfig` still carries the number (§7 records why it is a run rule rather than a per-tower
+one), which is where it waits.
 
 `Selected` opens on the catalogue's first entry, so the demo is playable before anything is tapped.
 
@@ -94,9 +106,10 @@ the refund fraction is a run rule rather than a per-tower one.
 - **`Tick()` takes no `dt`**, unlike every other `Tick` in the project, because nothing in it is
   time-based. Stated because the absence otherwise reads as an oversight and the next reader adds
   one.
-- **Sell is checked before legality.** A tap on an existing tower can never be misread as an
-  illegal placement, and `PlacementRules` shares one radius between "is this spot free" and "which
-  tower did I hit", so exactly one branch can be true.
+- **There is no sell branch, and no check that a tap missed a tower either.** The spacing radius
+  that used to decide *which* tower a tap hit is what now makes tapping one mean nothing: the tap
+  fails `IsLegal` and falls through to the same silence the road gets. `FindTowerAt` survives as
+  `PlacementRules`' own helper for `IsClearOfTowers` and has no caller in this class.
 - **Undo is strictly LIFO, and `void Undo()` is sound because of that, not by luck.** Undoing a
   sell charges its refund back, and that refund can have been spent — which looks like a case for
   `bool Undo()`. It cannot happen: a spend made after a sell is a command *above* it on the stack,
@@ -138,8 +151,9 @@ the refund fraction is a run rule rather than a per-tower one.
 - **Undo is a scope the phase opens, and mid-wave commands are permanent the instant they run.**
   `BuildState.Enter()` calls `OpenUndoScope()`, `Exit()` calls `CloseUndoScope()`. With the scope
   closed, `Run` executes the command and *retires* it instead of recording it — the same
-  `is SellTowerCommand → Discard()` check as `ClearHistory`, which is why a mid-wave sale destroys
-  its tower at once rather than leaving one inactive GameObject alive until the next phase boundary.
+  `is SellTowerCommand → Discard()` check as `ClearHistory` — which has no producer now that a tap
+  cannot sell, and stays because it is the half a returning sale would need. What a closed scope
+  observably does today is refuse to record, so a mid-wave purchase cannot be rewound.
   The alternative was a `phase == Build` check in this class, which is the one thing it does not do.
 - **A pending placement is not a command, and that is the rule rather than an omission.** §6 forbids
   a half-executed command reaching the stack, and an armed `PlaceTowerCommand` waiting for a second
@@ -148,10 +162,10 @@ the refund fraction is a run rule rather than a per-tower one.
 - **The confirm re-validates legality and affordability.** Both can change between the taps: a
   refund or another purchase moves currency, and during a wave the board can change too. The
   refused confirm still clears the ghost.
-- **The tap ladder is confirm, then sell, then place, and the order is load-bearing.** A ghost sits
-  on legal ground so it is a full spacing clear of every tower — but a tap between a ghost and a
-  tower is inside both radii, and there the pending intent wins. A rejected tap leaves the ghost
-  where it is; only a sale, a confirm, a `SelectTower` or a phase exit clears it.
+- **The tap ladder is confirm, then place, and the order still matters.** A ghost sits on legal
+  ground so it is a full spacing clear of every tower — but a tap between a ghost and a tower is
+  inside both radii, and there the pending intent wins over "that spot is taken". A rejected tap
+  leaves the ghost where it is; only a confirm, a `SelectTower` or a phase exit clears it.
 - **Re-tapping a tower button is the dismiss gesture**, because there is no Cancel button.
   `SelectTower` cancels on every select, not only on a changed one.
 - **`BuildAction.StartWave` reaches `OnBuildActionRequested` and is deliberately unhandled**, with
@@ -161,10 +175,19 @@ the refund fraction is a run rule rather than a per-tower one.
 ## Status
 
 **Implemented and fully unit-tested; one link still unproven on screen.** `BuildControllerTests`
-(32), `PlaceTowerCommandTests` (8), `SellTowerCommandTests` (10), `PlacementRulesTests` (14) and
-`BuildStateTests` (12) pass as part of a 295-test suite, and the whole dispatch — tap, hit-test,
-arm, confirm, re-validate, choose a command, record or retire, undo, clear — runs through
-`FakeInputService` with no scene.
+(30), `PlaceTowerCommandTests` (8), `SellTowerCommandTests` (10), `PlacementRulesTests` (14) and
+`BuildStateTests` (11) pass as part of a 292-test suite, and the whole dispatch — tap, arm,
+confirm, re-validate, place, record
+or refuse, undo, clear — runs through `FakeInputService` with no scene.
+
+**Removing the sell tap cost four tests that could not be rewritten, and that is worth naming.**
+`Undo_AfterASell_RestoresTheTower`, the sell-in-the-middle solvency case,
+`ClearHistory_DestroysTheTowersOfSalesItDiscards` and the mid-wave sale case all drove
+`SellTowerCommand` *through the invoker*, and nothing can push one onto the stack any more.
+`SellTowerCommandTests` still covers the command itself — refund, `Discard`, deactivate-not-destroy
+— so what is lost is the integration, not the unit: §6's LIFO-solvency argument is now proved by
+prose plus `SellTowerCommandTests`, where it used to have a fixture walking a mixed stack. If
+selling returns, that fixture is the thing to restore first.
 
 **What no run has shown is a real press arriving.** Six scripted play sessions failed to deliver a
 synthesized tap: the press reaches the device at the right position and
@@ -196,7 +219,8 @@ the interface down is exercised, and the device read above it still is not.
 
 | Missing | Trigger |
 |---|---|
-| `UpgradeTowerCommand` | a per-tower UI, so upgrade and sell stop competing for one tap (§7) |
+| `UpgradeTowerCommand` | a per-tower UI — and with selling gone from the tap, it no longer has to share one (§7) |
+| Any way to remove a placed tower except `Undo` | an affordance that gives a tower back: a sell button on a per-tower UI, or a salvage refund |
 | Any feedback on a rejected tap | PrimeTween (§15) |
 | A `TowerRegistry` beside `Level` | a third owner of the live tower set that is not the level |
 | Authored build plots instead of a distance rule | a map whose road art yields a legal spot that reads as unbuildable |

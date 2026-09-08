@@ -159,7 +159,7 @@ namespace MobileDemo.Gameplay
             // them: the runner bakes the path explicitly after instantiating, so the rules never
             // read an array Unity had not got to yet.
             build = new BuildController(
-                input, economy, levels, towerFactory, catalogue, config.SellRefundFraction);
+                input, economy, levels, towerFactory, catalogue);
 
             // Subscribed here and not only in OnEnable, because OnEnable has already run by now --
             // it fires before the first Start, when this object did not yet exist. OnEnable still

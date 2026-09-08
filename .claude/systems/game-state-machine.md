@@ -26,7 +26,7 @@ It deliberately does **not**:
 | Type | File | Role |
 |---|---|---|
 | `GameStateMachine` | [GameStateMachine.cs](../../Assets/Scripts/Gameplay/Phases/GameStateMachine.cs) | Holds the states, swaps, publishes, forwards `Tick` |
-| `BuildState` | [BuildState.cs](../../Assets/Scripts/Gameplay/Phases/BuildState.cs) | Place/sell; listens for Go; opens and closes the undo scope |
+| `BuildState` | [BuildState.cs](../../Assets/Scripts/Gameplay/Phases/BuildState.cs) | Placing and undo; listens for Go; opens and closes the undo scope |
 | `WaveState` | [WaveState.cs](../../Assets/Scripts/Gameplay/Phases/WaveState.cs) | Drives `WaveRunner` and the combat tick order — which starts with building again |
 | `VictoryState` | [VictoryState.cs](../../Assets/Scripts/Gameplay/Phases/VictoryState.cs) | Swaps in the next map, or freezes the board when the run is won |
 | `DefeatState` | [DefeatState.cs](../../Assets/Scripts/Gameplay/Phases/DefeatState.cs) | Empty, and stays empty (see Gotchas) |
@@ -129,7 +129,10 @@ collaborators are an interface and a static bus, which only `EconomyTests` can a
 **The defeat transition has now been seen at runtime, and §13.5 is where that finally happened.**
 It had been asserted by tests since §13.3 and never executed. What made it cheap was not tuning the
 waves up: the player already has an action that guarantees defeat, which is selling the map's
-authored towers and building nothing back. The recorded session sold both, started waves, and
+authored towers and building nothing back. (§13.6 removed both halves of that — the authored towers
+and the sell tap — so the cheap route to `Defeat` today is simply to build nothing, which is the
+opening state. The recorded run below still stands as evidence for the transition.) The recorded
+session sold both, started waves, and
 watched lives go 20 → 14 → 6 → 0, entering `Defeat` during wave 3 of map 1.
 
 Two things that transition proved which no test could:

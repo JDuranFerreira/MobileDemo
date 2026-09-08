@@ -24,7 +24,8 @@ It deliberately does **not**:
   listed by [`Level.Towers`](level.md). It never moves itself.
 - **Decide whether it may be built or sold.** [`PlacementRules`](build-controller.md) answers where,
   and `BuildController` answers whether. A tower has no notion of its own cost.
-- **Tear itself down when sold.** There is no `Sell` or `Dispose` here.
+- **Tear itself down when sold.** There is no `Sell` or `Dispose` here — and as of §13.6 nothing
+  sells at all: a placed tower is permanent, and `Undo` is the only thing that removes one.
   `SellTowerCommand` removes it from the level's list — which is what stops it ticking — and
   deactivates the GameObject.
 - **Scan every frame.** That is the entire point — see Gotchas.
@@ -76,7 +77,8 @@ Both are listed in `Data/Towers/TowerCatalogue.asset`, which is what makes them 
 `damageMultiplier` that scales it (both ship at 1, so the balance is unchanged). §7 has the
 argument.
 
-**`cost` has readers** — `BuildController`'s afford check and `SellTowerCommand`'s refund — so
+**`cost` has readers** — `BuildController`'s afford check, twice (arming a ghost and confirming it),
+and `SellTowerCommand`'s refund, which §13.6 left without a producer — so
 `TowerDefinition` has no authored-but-unread fields left. That vindicates the call
 `EnemyDefinition` made for `maxHealth`: author the asset once and completely, and the reader
 arrives later.
